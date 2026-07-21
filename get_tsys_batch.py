@@ -32,7 +32,6 @@ BATCH_PATH = "/report/v1/tsys/batch/export"
 AUTHORIZATION_PATH = "/report/v1/tsys/authorization/export"
 UAR_PATH = "/boarding/v1/uar"
 TSYS_PRODUCT_ID = "3"
-SLACK_WEBHOOK_DEFAULT_ENV = "SLACK_BATCH_REPORT_WEBHOOK"
 EMAIL_KEYS = ["URL", "STORENAME", "DEVICE", "AMOUNT", "TERMID"]
 REVIEW_KEYS = [
     "reason",
@@ -584,77 +583,6 @@ def make_client(config):
     return MxConnectClient(base_url, api_key)
 
 
-def slack_settings(config):
-    settings = config.get("slack") or {}
-    if not isinstance(settings, dict):
-        raise ValueError("Config slack setting must be an object.")
-    env_name = text(settings.get("webhookEnvironmentVariable")) or SLACK_WEBHOOK_DEFAULT_ENV
-    try:
-        max_rows = max(1, min(100, int(settings.get("maxRowsInMessage", 25))))
-    except (TypeError, ValueError):
-        max_rows = 25
-    return {
-        "enabled": settings.get("enabled", False) is True,
-        "send_when_empty": settings.get("sendWhenEmpty", False) is True,
-        "webhook_environment_variable": env_name,
-        "max_rows": max_rows,
-    }
-
-
-def slack_escape(value):
-    return text(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def slack_message(email_rows, batch_days, auth_window, email_path, max_rows):
-    total_amount = sum(parse_amount(row.get("AMOUNT")) for row in email_rows)
-    lines = [
-        f"*PINPAD BATCH NOT CLOSED IN {batch_days} DAYS*",
-        f"Report completed: {datetime.now():%Y-%m-%d %H:%M}",
-        f"Authorization window: `{slack_escape(auth_window)}`",
-        f"*Stores requiring review:* {len(email_rows)}",
-        f"*Approved authorization exposure:* ${total_amount:,.2f}",
-    ]
-    if not email_rows:
-        lines.append("No stores met the report criteria.")
-    else:
-        lines.append("*Stores:*")
-        for row in email_rows[:max_rows]:
-            store_name = slack_escape(row.get("STORENAME")) or "(unnamed store)"
-            device = slack_escape(row.get("DEVICE")) or "PAX"
-            amount = parse_amount(row.get("AMOUNT"))
-            lines.append(f"• {store_name} — {device} — ${amount:,.2f}")
-        if len(email_rows) > max_rows:
-            lines.append(f"…plus {len(email_rows) - max_rows} more store(s) in the CSV.")
-    lines.append(f"Primary CSV: `{Path(email_path).name}`")
-    return "\n".join(lines)
-
-
-def send_slack_notification(config, email_rows, batch_days, auth_window, email_path):
-    settings = slack_settings(config)
-    if not settings["enabled"]:
-        return False
-    if not email_rows and not settings["send_when_empty"]:
-        print("Slack notification skipped because the report contains no stores.")
-        return False
-
-    env_name = settings["webhook_environment_variable"]
-    webhook_url = clean_api_key(os.environ.get(env_name))
-    if not webhook_url:
-        raise RuntimeError(f"Set {env_name} before sending Slack notifications.")
-
-    response = requests.post(
-        webhook_url,
-        json={"text": slack_message(email_rows, batch_days, auth_window, email_path, settings["max_rows"])},
-        timeout=60,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"Slack webhook request failed with HTTP {response.status_code}.")
-    if text(response.text).casefold() != "ok":
-        body = text(response.text)[:200]
-        raise RuntimeError(f"Slack webhook rejected the notification: {body}")
-    return True
-
-
 def run_historical(args):
     config_path = Path(args.config or "config.json").expanduser().resolve()
     config, _ = load_config(config_path)
@@ -811,9 +739,6 @@ def main():
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
 
-    if send_slack_notification(config, email_rows, batch_days, auth_window, email_path):
-        print("Sent Slack notification.")
-
     print(f"{len(email_rows)} store(s) would be included in the email export.")
     print(f"{len(detail_rows)} authorization terminal detail row(s) were written.")
     print(f"{len(review_rows)} store review row(s) were excluded.")
@@ -845,12 +770,6 @@ def default_config():
         "authorizationWindow": "last_24_h",
         "requireAuthorizationActivity": True,
         "outputDirectory": "./tsys-auditdata",
-        "slack": {
-            "enabled": False,
-            "sendWhenEmpty": False,
-            "webhookEnvironmentVariable": SLACK_WEBHOOK_DEFAULT_ENV,
-            "maxRowsInMessage": 25,
-        },
         "devices": [],
     }
 

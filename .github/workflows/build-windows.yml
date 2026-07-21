@@ -33,6 +33,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
+      - name: Create build-time API key module
+        shell: pwsh
+        env:
+          MXCONNECT_API_KEY: ${{ secrets.MXCONNECT_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MXCONNECT_API_KEY)) {
+            throw "The MXCONNECT_API_KEY repository secret is required for this build."
+          }
+          $keyLiteral = $env:MXCONNECT_API_KEY | ConvertTo-Json -Compress
+          "EMBEDDED_API_KEY = $keyLiteral" | Set-Content -Path embedded_api_key.py -Encoding utf8
+
       - name: Verify Python source
         shell: pwsh
         run: python -m py_compile get_tsys_batch.py
@@ -58,6 +69,14 @@ jobs:
             --console `
             --name TSYS_PAX_BATCH_REPORT_CLI `
             get_tsys_batch.py
+
+      - name: Remove build-time API key source
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path embedded_api_key.py) {
+            Remove-Item embedded_api_key.py -Force
+          }
 
       - name: Add portable configuration template
         shell: pwsh

@@ -26,6 +26,11 @@ from urllib.parse import quote
 
 import requests
 
+try:
+    from embedded_api_key import EMBEDDED_API_KEY
+except ImportError:
+    EMBEDDED_API_KEY = ""
+
 
 BASE_URL = "https://api.mxconnect.com"
 AUTH_PATH = "/security/v1/apiKey/authenticate"
@@ -1018,9 +1023,11 @@ def make_client(config):
     if base_url.endswith(AUTH_PATH):
         base_url = base_url[: -len(AUTH_PATH)].rstrip("/")
     api_key_name = text(config.get("apiKeyEnvironmentVariable")) or "MXCONNECT_API_KEY"
-    api_key = clean_api_key(os.environ.get(api_key_name))
+    api_key = clean_api_key(EMBEDDED_API_KEY) or clean_api_key(os.environ.get(api_key_name))
     if not api_key:
-        raise RuntimeError(f"Set {api_key_name} before running the API report.")
+        raise RuntimeError(
+            f"Set {api_key_name} or use an executable built with an embedded API key."
+        )
     return MxConnectClient(base_url, api_key)
 
 

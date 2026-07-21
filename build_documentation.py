@@ -567,7 +567,7 @@ def build_technical_manual():
         "Open BottlePOS PAX Batch Report.exe. Use Open config if config.json is not beside the program, or use the displayed path.",
         "Choose the output folder and set Report timeframe (days). The default is 3.",
         "Click Save config before running. The UI stores the output folder as a portable relative path when it is under the config folder.",
-        "Click Run report. Read the log panel for authentication, fetch progress, counts, and output paths.",
+        "Click Run report. Read the log panel for the current processing step, final record counts, output directory, and elapsed time.",
         "Use Refresh historical data only when an updated historical batch/roster snapshot is needed; it writes into a timestamped folder under the historical subfolder.",
     ]:
         add_list_item(doc, item, num, after=5, line=1.167)
@@ -719,7 +719,7 @@ def build_user_guide():
         add_list_item(doc, item, number, after=4, line=1.25)
 
     add_heading(doc, "4. Run the report", 1)
-    add_body(doc, "Click Run report. The log panel will show authentication, batch and roster retrieval, authorization scanning, record counts, and the output paths. Wait for the completed message and confirm the primary CSV was written before sending or reviewing it.")
+    add_body(doc, "Click Run report. The log panel will show the current processing step, final batch/roster/authorization counts, the number of reports created, the output directory, and elapsed time. Wait for the completed message and confirm the primary CSV was written before sending or reviewing it.")
     add_body(doc, "The program uses the active MXConnect TSYS roster as its store list. It excludes stores that have an accepted batch in the selected window, then checks approved authorization activity for the remaining candidate stores.")
 
     add_heading(doc, "5. Understand the output", 1)

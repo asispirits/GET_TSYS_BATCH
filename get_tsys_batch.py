@@ -23,6 +23,7 @@ from collections import Counter, defaultdict
 from argparse import ArgumentParser
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from time import perf_counter
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import quote
 
@@ -288,8 +289,6 @@ def fetch_all(client, url):
             raise RuntimeError("MXConnect returned more records but no scroll ID.")
         payload = {"scrollId": scroll_id}
         data = client.request("POST", url, payload)
-        print(f"Fetched {len(records)} records" + (f" of {expected_total}" if expected_total else ""))
-        flush_output()
 
     return records
 
@@ -363,8 +362,6 @@ def fetch_uar(client):
             break
         if len(page) < 100:
             break
-        print(f"Fetched {offset} UAR records" + (f" of {total}" if total else ""))
-        flush_output()
     return records
 
 
@@ -1224,19 +1221,19 @@ def make_client(config):
 
 
 def run_historical(args):
+    started = perf_counter()
     config_path = Path(args.config or "config.json").expanduser().resolve()
     config, _ = load_config(config_path)
     historical_days = args.historical_days or int(config.get("historicalLookbackDays", 90))
     output_directory = create_timestamped_output_directory(
         resolve_output_directory(config_path, config) / "historical"
     )
+    print("Step 1 of 3: Connecting to MXConnect...")
     client = make_client(config)
     client.authenticate()
 
     start_time, end_time = date_window(historical_days)
-    print(
-        f"Historical batch window: {start_time:%Y-%m-%d} - {end_time:%Y-%m-%d}"
-    )
+    print("Step 2 of 3: Fetching historical batch activity...")
     base_url = text(config.get("apiBaseUrl")) or BASE_URL
     if base_url.endswith(AUTH_PATH):
         base_url = base_url[: -len(AUTH_PATH)].rstrip("/")
@@ -1245,13 +1242,17 @@ def run_historical(args):
         batch_url(base_url, start_time.strftime("%Y-%m-%d"), end_time.strftime("%Y-%m-%d")),
     )
     accepted_batch_records = [record for record in batch_records if is_accepted_batch(record)]
-    print(f"Accepted batch records: {len(accepted_batch_records)} of {len(batch_records)}")
+    print(f"Batch activity reviewed: {len(batch_records)} records; {len(accepted_batch_records)} accepted")
+    print("Step 3 of 3: Writing historical reports...")
     write_raw_batch_history(accepted_batch_records, output_directory / "batch_history.csv")
     write_term_history(accepted_batch_records, output_directory / "termid_account_history.csv")
 
     roster_records = fetch_uar(client)
     write_active_roster(roster_records, output_directory / "active_tsys_roster.csv")
-    print(f"Wrote historical data to {output_directory}")
+    print("Historical refresh complete.")
+    print(f"Reports created: 3")
+    print(f"Output directory: {output_directory}")
+    print(f"Elapsed time: {perf_counter() - started:.1f} seconds")
 
 
 def parse_args():
@@ -1304,6 +1305,7 @@ def parse_args():
 
 
 def main():
+    started = perf_counter()
     args = parse_args()
     configure_process_output(args.log_file)
     if args.refresh_historical:
@@ -1342,18 +1344,19 @@ def main():
     # run must not leave yesterday's CSV looking like the current result.
     write_csv([], email_path, EMAIL_KEYS)
 
+    print("Step 1 of 5: Connecting to MXConnect...")
     client = make_client(config)
     client.authenticate()
 
     report_start, report_end = date_window(batch_days)
-    print("Fetching TSYS batch records for the report window...")
+    print("Step 2 of 5: Checking batch activity...")
     batch_records = fetch_all(
         client,
         batch_url(base_url, report_start.strftime("%Y-%m-%d"), report_end.strftime("%Y-%m-%d")),
     )
     accepted_batch_records = [record for record in batch_records if is_accepted_batch(record)]
-    print(f"Accepted batch records: {len(accepted_batch_records)} of {len(batch_records)}")
-    print("Fetching active TSYS merchant roster...")
+    print(f"Batch activity reviewed: {len(batch_records)} records; {len(accepted_batch_records)} accepted")
+    print("Step 3 of 5: Loading active TSYS merchants...")
     roster_records = fetch_uar(client)
     active_accounts = active_tsys_accounts(roster_records)
     print(f"Active TSYS merchants: {len(active_accounts)}")
@@ -1373,7 +1376,7 @@ def main():
     if candidate_accounts and historical_days > batch_days:
         history_start, history_end = date_window(historical_days)
         print(
-            f"Fetching accepted batch history for lastBatchDate ({historical_days} days)..."
+            f"Supplementing lastBatchDate from the {historical_days}-day history..."
         )
         history_records = fetch_all(
             client,
@@ -1386,20 +1389,17 @@ def main():
         accepted_history_records = [
             record for record in history_records if is_accepted_batch(record)
         ]
-        print(
-            f"Accepted historical batch records: {len(accepted_history_records)} "
-            f"of {len(history_records)}"
-        )
+        print(f"Historical activity reviewed: {len(history_records)} records; {len(accepted_history_records)} accepted")
     last_batch_by_account = latest_batch_dates_by_account(accepted_history_records)
 
-    print("Fetching authorization detail for candidate stores...")
+    print("Step 4 of 5: Checking authorization activity...")
     authorization_records = fetch_all(
         client,
         authorization_url(base_url, auth_window, candidate_accounts),
     ) if candidate_accounts else []
     auth_summary = build_auth_summary(authorization_records, require_approved)
     in_use_accounts = {account for account, _ in auth_summary}
-    print(f"Active TSYS stores with approved authorization activity: {len(in_use_accounts)}")
+    print(f"Authorization activity reviewed: {len(authorization_records)} records; {len(in_use_accounts)} stores active")
 
     email_rows, review_rows = create_store_report(
         roster_records,
@@ -1409,6 +1409,7 @@ def main():
         last_batch_by_account,
     )
 
+    print("Step 5 of 5: Writing report files...")
     write_csv(email_rows, email_path, EMAIL_KEYS)
     write_csv(review_rows, review_path, REVIEW_KEYS)
     batch_history_path = output_directory / "batch_history.csv"
@@ -1434,15 +1435,15 @@ def main():
         ],
     )
 
-    print(f"{len(email_rows)} store(s) would be included in the email export.")
-    print(f"{len(review_rows)} store review row(s) were excluded.")
-    print(f"Wrote {email_path}")
-    print(f"Wrote {review_path}")
-    print(f"Wrote {batch_history_path}")
-    print(f"Wrote {term_history_path}")
-    print(f"Wrote {summary_path}")
+    output_paths = [email_path, review_path, batch_history_path, term_history_path, summary_path]
     if raw_path:
-        print(f"Wrote {raw_path}")
+        output_paths.append(raw_path)
+    print("Report complete.")
+    print(f"Stores flagged: {len(email_rows)}")
+    print(f"Stores excluded for review: {len(review_rows)}")
+    print(f"Reports created: {len(output_paths)}")
+    print(f"Output directory: {output_directory}")
+    print(f"Elapsed time: {perf_counter() - started:.1f} seconds")
     return 0
 
 

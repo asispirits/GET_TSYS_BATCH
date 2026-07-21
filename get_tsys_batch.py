@@ -10,17 +10,19 @@ authoritative store list.
 """
 
 import csv
+import base64
+from html import escape
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from collections import Counter, defaultdict
 from argparse import ArgumentParser
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from sys import stdout
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import quote
 
@@ -38,7 +40,17 @@ BATCH_PATH = "/report/v1/tsys/batch/export"
 AUTHORIZATION_PATH = "/report/v1/tsys/authorization/export"
 UAR_PATH = "/boarding/v1/uar"
 TSYS_PRODUCT_ID = "3"
-EMAIL_KEYS = ["URL", "STORENAME", "DEVICE", "AMOUNT", "TERMID"]
+EMAIL_KEYS = [
+    "STORENAME",
+    "DEVICE",
+    "AMOUNT",
+    "TERMID",
+    "accountNumber",
+    "terminalNumber",
+    "approvedAmount",
+    "approvedCount",
+    "batchStatus",
+]
 REVIEW_KEYS = [
     "reason",
     "URL",
@@ -48,14 +60,6 @@ REVIEW_KEYS = [
     "termID",
     "terminalNumber",
     "details",
-]
-DETAIL_KEYS = [
-    "accountNumber",
-    "STORENAME",
-    "terminalNumber",
-    "approvedAmount",
-    "approvedCount",
-    "batchStatus",
 ]
 RAW_BATCH_KEYS = [
     "created", "rejected", "batchNumber", "accountNumber", "termID",
@@ -102,13 +106,26 @@ def application_entrypoint():
     return Path(__file__).resolve()
 
 
-def application_cli_entrypoint():
-    entrypoint = application_entrypoint()
-    if getattr(sys, "frozen", False):
-        cli_entrypoint = entrypoint.with_name("TSYS_PAX_BATCH_REPORT_CLI.exe")
-        if cli_entrypoint.exists():
-            return cli_entrypoint
-    return entrypoint
+_PROCESS_OUTPUT_HANDLE = None
+
+
+def configure_process_output(log_path=None):
+    global _PROCESS_OUTPUT_HANDLE
+    if log_path:
+        path = Path(log_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _PROCESS_OUTPUT_HANDLE = path.open("w", encoding="utf-8", buffering=1)
+        sys.stdout = _PROCESS_OUTPUT_HANDLE
+        sys.stderr = _PROCESS_OUTPUT_HANDLE
+    elif sys.stdout is None or sys.stderr is None:
+        _PROCESS_OUTPUT_HANDLE = open(os.devnull, "w", encoding="utf-8")
+        sys.stdout = _PROCESS_OUTPUT_HANDLE
+        sys.stderr = _PROCESS_OUTPUT_HANDLE
+
+
+def flush_output():
+    if sys.stdout is not None:
+        sys.stdout.flush()
 
 
 def load_config(path):
@@ -274,7 +291,7 @@ def fetch_all(client, url):
         payload = {"scrollId": scroll_id}
         data = client.request("POST", url, payload)
         print(f"Fetched {len(records)} records" + (f" of {expected_total}" if expected_total else ""))
-        stdout.flush()
+        flush_output()
 
     return records
 
@@ -349,7 +366,7 @@ def fetch_uar(client):
         if len(page) < 100:
             break
         print(f"Fetched {offset} UAR records" + (f" of {total}" if total else ""))
-        stdout.flush()
+        flush_output()
     return records
 
 
@@ -435,7 +452,6 @@ def create_store_report(uar_records, raw_devices, auth_summary, current_batch_re
         account_summary["terminals"].append((terminal, detail))
 
     email_rows = []
-    detail_rows = []
     review_rows = []
     for account in sorted(auth_by_account):
         if account in batched_accounts:
@@ -489,20 +505,14 @@ def create_store_report(uar_records, raw_devices, auth_summary, current_batch_re
             continue
 
         summary = auth_by_account[account]
-        email_rows.append(
-            {
-                "URL": override.get("URL", ""),
-                "STORENAME": store_name,
-                "DEVICE": override.get("DEVICE", "PAX"),
-                "AMOUNT": f"{summary['amount']:.2f}",
-                "TERMID": "",
-            }
-        )
-        for terminal, detail in summary["terminals"]:
-            detail_rows.append(
+        for terminal, detail in sorted(summary["terminals"], key=lambda item: item[0]):
+            email_rows.append(
                 {
-                    "accountNumber": account,
                     "STORENAME": store_name,
+                    "DEVICE": override.get("DEVICE", "PAX"),
+                    "AMOUNT": f"{summary['amount']:.2f}",
+                    "TERMID": "",
+                    "accountNumber": account,
                     "terminalNumber": terminal,
                     "approvedAmount": f"{detail['amount']:.2f}",
                     "approvedCount": detail["count"],
@@ -510,7 +520,7 @@ def create_store_report(uar_records, raw_devices, auth_summary, current_batch_re
                 }
             )
 
-    return email_rows, detail_rows, review_rows
+    return email_rows, review_rows
 
 
 def build_auth_summary(records, require_approved):
@@ -539,11 +549,26 @@ def batch_index(records):
         if not account or not term:
             continue
         pair = (account, term)
-        batch_date = text(record.get("batchDate"))
-        if pair not in by_pair or batch_date > by_pair[pair]["lastBatchDate"]:
-            by_pair[pair] = {"lastBatchDate": batch_date}
+        sort_value = text(record.get("created")) or text(record.get("batchDate"))
+        if pair not in by_pair or sort_value > by_pair[pair]["_sortValue"]:
+            by_pair[pair] = {
+                "lastBatchDate": format_batch_timestamp(record),
+                "_sortValue": sort_value,
+            }
         term_accounts.setdefault(term, set()).add(account)
     return by_pair, term_accounts
+
+
+def format_batch_timestamp(record):
+    created = text(record.get("created"))
+    if created:
+        try:
+            parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            suffix = " UTC" if created.endswith(("Z", "z")) else ""
+            return f"{parsed:%Y-%m-%d %H:%M:%S}{suffix}"
+        except ValueError:
+            return created.replace("T", " ").rstrip("Zz")
+    return text(record.get("batchDate"))
 
 
 def write_raw_batch_history(records, path):
@@ -793,7 +818,10 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     data_by_label = {label: rows for label, _, _, rows in csv_data}
     primary_rows = data_by_label.get("Primary exception report", [])
     review_rows = data_by_label.get("Store review", [])
-    detail_rows = data_by_label.get("Authorization detail", [])
+    detail_rows = data_by_label.get("Authorization detail", []) or [
+        row for row in primary_rows
+        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+    ]
     accepted_batch_rows = data_by_label.get("Accepted batch history", [])
     raw_batch_rows = data_by_label.get("Raw batch export", [])
     term_rows = data_by_label.get("Term/account history", [])
@@ -974,6 +1002,192 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     return path
 
 
+def write_summary_html(path, batch_days, auth_window, report_start, report_end, csv_specs):
+    csv_data = []
+    for label, csv_path, description in csv_specs:
+        if csv_path:
+            path_value = Path(csv_path)
+            csv_data.append((label, path_value, description, read_csv_rows(path_value)))
+    data_by_label = {label: rows for label, _, _, rows in csv_data}
+    primary_rows = data_by_label.get("Primary exception report", [])
+    review_rows = data_by_label.get("Store review", [])
+    detail_rows = data_by_label.get("Authorization detail", []) or [
+        row for row in primary_rows
+        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+    ]
+    accepted_batch_rows = data_by_label.get("Accepted batch history", [])
+    raw_batch_rows = data_by_label.get("Raw batch export", [])
+
+    unique_primary_rows = []
+    seen_accounts = set()
+    for row in primary_rows:
+        key = text(row.get("accountNumber")) or "|".join(
+            [text(row.get("STORENAME")), text(row.get("DEVICE"))]
+        )
+        if key in seen_accounts:
+            continue
+        seen_accounts.add(key)
+        unique_primary_rows.append(row)
+
+    primary_total = sum(parse_amount(row.get("AMOUNT")) for row in unique_primary_rows)
+    detail_total = sum(parse_amount(row.get("approvedAmount")) for row in detail_rows)
+    reason_counts = Counter(text(row.get("reason")) or "UNSPECIFIED" for row in review_rows)
+    term_accounts = defaultdict(set)
+    for row in accepted_batch_rows:
+        term = text(row.get("termID"))
+        account = text(row.get("accountNumber"))
+        if term and account:
+            term_accounts[term].add(account)
+    ambiguous_terms = [
+        (term, ", ".join(sorted(accounts)))
+        for term, accounts in sorted(term_accounts.items())
+        if len(accounts) > 1
+    ]
+    rejected_raw = sum(1 for row in raw_batch_rows if not is_accepted_batch(row)) if raw_batch_rows else 0
+
+    logo_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    logo_path = logo_root / "bottlepos_logo.png"
+    logo_html = ""
+    if logo_path.exists():
+        logo_data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        logo_html = f'<img class="logo" src="data:image/png;base64,{logo_data}" alt="Bottle POS">'
+
+    def cell(value):
+        return escape(text(value) or "-")
+
+    finding = (
+        f"{len(unique_primary_rows):,} store(s) met the report criteria, representing "
+        f"${primary_total:,.2f} in approved authorization exposure. The report is store/account level; "
+        "it does not prove which physical terminal failed to batch."
+        if unique_primary_rows
+        else "No stores met the report criteria for this run. No active TSYS account had both approved authorization activity and no accepted batch in the selected window."
+    )
+    reason_text = ", ".join(
+        f"{escape(reason)}: {count:,}" for reason, count in reason_counts.most_common(4)
+    ) or "None"
+    ambiguous_text = (
+        f"{len(ambiguous_terms):,} termID value(s) appeared under multiple account numbers in accepted batch history."
+        if ambiguous_terms else "No reused termID values were found in the accepted batch history."
+    )
+    top_rows = sorted(
+        unique_primary_rows,
+        key=lambda row: parse_amount(row.get("approvedAmount") or row.get("AMOUNT")),
+        reverse=True,
+    )[:5]
+    top_rows_html = "".join(
+        "<tr>"
+        f"<td>{cell(row.get('STORENAME'))}</td>"
+        f"<td>{cell(row.get('accountNumber'))}</td>"
+        f"<td>{cell(row.get('terminalNumber'))}</td>"
+        f"<td class=amount>${parse_amount(row.get('approvedAmount') or row.get('AMOUNT')):,.2f}</td>"
+        "</tr>"
+        for row in top_rows
+    ) or '<tr><td colspan="4" class="empty">No primary exception rows were generated.</td></tr>'
+    file_list_html = "".join(
+        f'<li><span>{escape(path_value.name)}</span><small>{len(rows):,} row(s)</small></li>'
+        for _, path_value, _, rows in csv_data
+    )
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    html_document = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSYS PAX BATCH REPORT SUMMARY</title>
+  <style>
+    :root {{
+      --navy: #203239;
+      --navy-2: #17272d;
+      --blue: #3d8fca;
+      --blue-light: #d9edf7;
+      --green: #8bbd35;
+      --yellow: #f1b735;
+      --red: #df6268;
+      --ink: #30383d;
+      --muted: #7a8790;
+      --border: #d9dde0;
+      --surface: #ffffff;
+      --canvas: #f4f5f6;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--canvas); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }}
+    .topbar {{ height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 30px; background: var(--surface); border-bottom: 1px solid var(--border); }}
+    .logo {{ width: 170px; height: auto; display: block; }}
+    .brand {{ font-size: 20px; font-weight: 700; color: var(--navy); letter-spacing: .2px; }}
+    .run-meta {{ margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; }}
+    .layout {{ display: flex; min-height: calc(100vh - 72px); }}
+    .sidebar {{ width: 205px; flex: 0 0 205px; background: var(--navy); color: #c8d1d5; padding-top: 22px; }}
+    .sidebar-label {{ padding: 0 22px 12px; color: #9fb0b7; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
+    .nav {{ padding: 12px 22px; font-size: 14px; border-left: 4px solid transparent; }}
+    .nav.active {{ background: var(--blue); color: #fff; border-left-color: #fff; font-weight: 700; }}
+    .main {{ width: 100%; max-width: 1280px; margin: 0 auto; padding: 26px 32px 38px; }}
+    .page-title {{ display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }}
+    h1 {{ margin: 0; font-size: 27px; color: var(--navy); }}
+    h2 {{ margin: 26px 0 11px; font-size: 18px; color: var(--navy); }}
+    .subtitle {{ color: var(--muted); font-size: 13px; }}
+    .finding {{ margin-top: 22px; padding: 17px 20px; background: #fff8df; border: 1px solid #efdaa0; border-left: 5px solid var(--yellow); line-height: 1.5; }}
+    .finding strong {{ color: #9a6b00; }}
+    .cards {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }}
+    .card {{ background: var(--surface); border: 1px solid var(--border); padding: 15px 16px; min-height: 92px; }}
+    .card .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }}
+    .card .value {{ margin-top: 9px; color: var(--blue); font-size: 23px; font-weight: 700; }}
+    .card.green .value {{ color: var(--green); }}
+    .card.yellow .value {{ color: var(--yellow); }}
+    .card.red .value {{ color: var(--red); }}
+    .panel {{ background: var(--surface); border: 1px solid var(--border); }}
+    .panel-title {{ padding: 11px 14px; background: linear-gradient(#fff, #f1f1f1); border-bottom: 1px solid var(--border); font-weight: 700; color: var(--navy); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th {{ padding: 10px 12px; text-align: left; background: var(--blue-light); color: var(--navy); border-bottom: 1px solid #bdd7e7; }}
+    td {{ padding: 9px 12px; border-bottom: 1px solid #e7e9ea; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .amount {{ text-align: right; font-weight: 700; color: var(--green); }}
+    .empty {{ color: var(--muted); text-align: center; padding: 18px; }}
+    .two-col {{ display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 18px; align-items: start; }}
+    .note {{ padding: 14px 16px; background: #f8fafb; border: 1px solid var(--border); color: var(--muted); line-height: 1.5; font-size: 13px; }}
+    .files {{ list-style: none; margin: 0; padding: 0; }}
+    .files li {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e7e9ea; font-size: 12px; }}
+    .files li:last-child {{ border-bottom: 0; }}
+    .files small {{ color: var(--muted); white-space: nowrap; }}
+    footer {{ margin-top: 28px; color: var(--muted); font-size: 12px; text-align: right; }}
+    @media (max-width: 900px) {{ .sidebar {{ display: none; }} .main {{ padding: 20px; }} .cards {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .two-col {{ grid-template-columns: 1fr; }} }}
+    @media print {{ body {{ background: #fff; }} .sidebar {{ display: none; }} .main {{ max-width: none; padding: 0; }} .topbar {{ padding: 0 0 14px; }} .panel, .card {{ break-inside: avoid; }} }}
+  </style>
+</head>
+<body>
+  <header class="topbar">{logo_html}<div class="brand">TSYS PAX BATCH REPORT</div><div class="run-meta">Run summary<br>Generated {escape(generated)}</div></header>
+  <div class="layout">
+    <aside class="sidebar"><div class="sidebar-label">REPORTING</div><div class="nav">Dashboard</div><div class="nav active">TSYS Batch Report</div><div class="nav">Historical Data</div></aside>
+    <main class="main">
+      <div class="page-title"><h1>Batch exception summary</h1><span class="subtitle">Bottle POS</span></div>
+      <div class="subtitle">Batch window: {escape(report_start.strftime('%Y-%m-%d'))} to {escape(report_end.strftime('%Y-%m-%d'))} &nbsp;|&nbsp; Authorization: {escape(auth_window)}</div>
+      <section class="finding"><strong>Primary finding.</strong> {escape(finding)}</section>
+      <h2>Key results</h2>
+      <section class="cards">
+        <div class="card"><div class="label">Stores flagged</div><div class="value">{len(unique_primary_rows):,}</div></div>
+        <div class="card green"><div class="label">Approved exposure</div><div class="value">${primary_total:,.2f}</div></div>
+        <div class="card"><div class="label">Authorization detail</div><div class="value">{len(detail_rows):,}</div></div>
+        <div class="card yellow"><div class="label">Accepted batches</div><div class="value">{len(accepted_batch_rows):,}</div></div>
+        <div class="card red"><div class="label">Review excluded</div><div class="value">{len(review_rows):,}</div></div>
+      </section>
+      <div class="two-col">
+        <section><h2>Top flagged stores</h2><div class="panel"><div class="panel-title">Approved authorization detail</div><table><thead><tr><th>Store</th><th>Account</th><th>Terminal</th><th class=amount>Amount</th></tr></thead><tbody>{top_rows_html}</tbody></table></div></section>
+        <section><h2>Output files</h2><div class="panel"><ul class="files">{file_list_html}</ul></div></section>
+      </div>
+      <h2>Important interpretation</h2>
+      <div class="note">The primary report is store/account level. TERMID is intentionally blank; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
+      <footer>Bottle POS &nbsp;|&nbsp; TSYS_PAX_BATCH_REPORT</footer>
+    </main>
+  </div>
+</body>
+</html>
+"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html_document, encoding="utf-8")
+    return path
+
+
 def make_client(config):
     base_url = text(config.get("apiBaseUrl")) or BASE_URL
     if base_url.endswith(AUTH_PATH):
@@ -1060,11 +1274,16 @@ def parse_args():
         "-tf", "--tsys_filename", dest="raw_batch_output", default=None,
         help="Optional raw batch CSV output path retained for compatibility",
     )
+    parser.add_argument(
+        "--log-file", default=None,
+        help="Internal log file path used when the windowed executable runs in report mode",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    configure_process_output(args.log_file)
     if args.refresh_historical:
         run_historical(args)
         return 0
@@ -1085,14 +1304,13 @@ def main():
 
     email_path = Path(args.output).expanduser() if args.output else output_directory / f"pinpad_batch_not_closed_{batch_days}_days.csv"
     review_path = Path(args.review_output).expanduser() if args.review_output else output_directory / "needs_mapping_or_review.csv"
-    detail_path = output_directory / "in_use_not_batched_detail.csv"
     raw_path = Path(args.raw_batch_output).expanduser() if args.raw_batch_output else None
 
     print(f"Loaded {len(raw_devices)} optional store display overrides.")
     print(f"MXConnect base URL: {base_url}")
     print(f"Batch window: {batch_days} days; authorization window: {auth_window}")
     print(f"Run output directory: {output_directory}")
-    stdout.flush()
+    flush_output()
 
     # Clear any previous email data before starting a new API run. A failed
     # run must not leave yesterday's CSV looking like the current result.
@@ -1133,7 +1351,7 @@ def main():
     in_use_accounts = {account for account, _ in auth_summary}
     print(f"Active TSYS stores with approved authorization activity: {len(in_use_accounts)}")
 
-    email_rows, detail_rows, review_rows = create_store_report(
+    email_rows, review_rows = create_store_report(
         roster_records,
         raw_devices,
         auth_summary,
@@ -1142,7 +1360,6 @@ def main():
 
     write_csv(email_rows, email_path, EMAIL_KEYS)
     write_csv(review_rows, review_path, REVIEW_KEYS)
-    write_csv(detail_rows, detail_path, DETAIL_KEYS)
     batch_history_path = output_directory / "batch_history.csv"
     term_history_path = output_directory / "termid_account_history.csv"
     write_raw_batch_history(accepted_batch_records, batch_history_path)
@@ -1150,8 +1367,8 @@ def main():
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
 
-    summary_path = output_directory / f"tsys_batch_report_summary_{batch_days}_days.docx"
-    write_summary_docx(
+    summary_path = output_directory / "TSYS PAX BATCH REPORT SUMMARY.html"
+    write_summary_html(
         summary_path,
         batch_days,
         auth_window,
@@ -1160,7 +1377,6 @@ def main():
         [
             ("Primary exception report", email_path, "Stores that met the primary report criteria."),
             ("Store review", review_path, "Rows excluded from the primary report for review."),
-            ("Authorization detail", detail_path, "Approved authorization detail for candidate stores."),
             ("Accepted batch history", batch_history_path, "Accepted batch records used by this run."),
             ("Term/account history", term_history_path, "AccountNumber and termID pairs from accepted batch records."),
             ("Raw batch export", raw_path, "Optional unfiltered batch export when requested."),
@@ -1168,11 +1384,9 @@ def main():
     )
 
     print(f"{len(email_rows)} store(s) would be included in the email export.")
-    print(f"{len(detail_rows)} authorization terminal detail row(s) were written.")
     print(f"{len(review_rows)} store review row(s) were excluded.")
     print(f"Wrote {email_path}")
     print(f"Wrote {review_path}")
-    print(f"Wrote {detail_path}")
     print(f"Wrote {batch_history_path}")
     print(f"Wrote {term_history_path}")
     print(f"Wrote {summary_path}")
@@ -1207,19 +1421,17 @@ class BatchReportUi(tk.Tk):
     def __init__(self, initial_config=None):
         super().__init__()
         self.title("TSYS_PAX_BATCH_REPORT")
-        self.geometry("1160x760")
-        self.minsize(960, 620)
+        self.geometry("1180x780")
+        self.minsize(1040, 680)
         self.configure(bg="#ffffff")
 
         self.script_path = application_entrypoint()
-        self.command_path = application_cli_entrypoint()
         self.config_path_var = tk.StringVar(
             value=str(Path(initial_config).expanduser().resolve())
             if initial_config else str(self.script_path.with_name("config.json"))
         )
         self.output_directory_var = tk.StringVar(value="./tsys-auditdata")
         self.batch_days_var = tk.IntVar(value=3)
-        self.filter_var = tk.StringVar()
         self.devices = []
         self.config = default_config()
         self.loaded_config_path = None
@@ -1228,7 +1440,6 @@ class BatchReportUi(tk.Tk):
 
         self.configure_styles()
         self.build_controls()
-        self.filter_var.trace_add("write", lambda *_: self.refresh_table())
         self.load_config_path(self.config_path_var.get(), log=False)
 
     def configure_styles(self):
@@ -1247,6 +1458,8 @@ class BatchReportUi(tk.Tk):
         style.configure(".", font=("Segoe UI", 9), background=surface, foreground=ink)
         style.configure("TFrame", background=surface)
         style.configure("TLabel", background=surface, foreground=ink)
+        style.configure("Section.TLabel", background=surface, foreground="#203239", font=("Segoe UI", 14, "bold"))
+        style.configure("Muted.TLabel", background=surface, foreground="#7a8790", font=("Segoe UI", 9))
         style.configure(
             "TButton",
             background=control_surface,
@@ -1314,8 +1527,82 @@ class BatchReportUi(tk.Tk):
         style.map("TScrollbar", background=[("active", "#d8dee4")])
 
     def build_controls(self):
-        outer = ttk.Frame(self, padding=12)
+        shell = tk.Frame(self, bg="#f4f5f6")
+        shell.pack(fill="both", expand=True)
+
+        sidebar = tk.Frame(shell, width=190, bg="#203239")
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        tk.Label(
+            sidebar,
+            text="REPORTING",
+            bg="#203239",
+            fg="#9fb0b7",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            padx=18,
+            pady=18,
+        ).pack(fill="x")
+        for label, active in (
+            ("Dashboard", False),
+            ("TSYS Batch Report", True),
+            ("Historical Data", False),
+        ):
+            tk.Label(
+                sidebar,
+                text=label,
+                bg="#3d8fca" if active else "#203239",
+                fg="#ffffff" if active else "#c8d1d5",
+                font=("Segoe UI", 10, "bold" if active else "normal"),
+                anchor="w",
+                padx=18,
+                pady=11,
+            ).pack(fill="x", pady=(0, 1))
+        tk.Label(
+            sidebar,
+            text="Bottle POS",
+            bg="#203239",
+            fg="#9fb0b7",
+            font=("Segoe UI", 9),
+            anchor="w",
+            padx=18,
+        ).pack(side="bottom", fill="x", pady=18)
+
+        content = tk.Frame(shell, bg="#f4f5f6")
+        content.pack(side="left", fill="both", expand=True)
+        header = tk.Frame(content, height=66, bg="#ffffff", highlightthickness=1, highlightbackground="#e1e4e6")
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        logo_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        logo_path = logo_root / "bottlepos_logo.png"
+        self.logo_image = None
+        if logo_path.exists():
+            try:
+                self.logo_image = tk.PhotoImage(file=str(logo_path))
+            except tk.TclError:
+                self.logo_image = None
+        if self.logo_image is not None:
+            tk.Label(header, image=self.logo_image, bg="#ffffff").pack(side="left", padx=(18, 12))
+        tk.Label(
+            header,
+            text="TSYS PAX BATCH REPORT",
+            bg="#ffffff",
+            fg="#203239",
+            font=("Segoe UI", 15, "bold"),
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text="Bottle POS",
+            bg="#ffffff",
+            fg="#3d8fca",
+            font=("Segoe UI", 10, "bold"),
+            anchor="e",
+        ).pack(side="right", padx=20)
+
+        outer = ttk.Frame(content, padding=16)
         outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Report setup", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         top = ttk.Frame(outer)
         top.pack(fill="x")
@@ -1354,14 +1641,6 @@ class BatchReportUi(tk.Tk):
         ttk.Button(actions, text="Save config", command=self.save_config_from_ui).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Run report", command=self.run_report).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Refresh historical data", command=self.refresh_historical).pack(side="left")
-
-        filter_frame = ttk.Frame(outer)
-        filter_frame.pack(fill="x", pady=(4, 8))
-        filter_frame.columnconfigure(1, weight=1)
-        ttk.Label(filter_frame, text="Filter devices").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(filter_frame, textvariable=self.filter_var).grid(row=0, column=1, sticky="ew")
-        self.device_count_label = ttk.Label(filter_frame, text="0 shown / 0 total")
-        self.device_count_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
@@ -1447,17 +1726,10 @@ class BatchReportUi(tk.Tk):
         return text(device.get(key))
 
     def refresh_table(self):
-        filter_value = self.filter_var.get().strip().casefold()
         self.tree.delete(*self.tree.get_children())
-        shown = 0
         for index, device in enumerate(self.devices):
-            searchable = "|".join(text(device.get(key)) for key, _, _ in UI_COLUMNS).casefold()
-            if filter_value and filter_value not in searchable:
-                continue
             values = [self.display_value(device, key) for key, _, _ in UI_COLUMNS]
             self.tree.insert("", "end", iid=str(index), values=values)
-            shown += 1
-        self.device_count_label.configure(text=f"{shown:,} shown / {len(self.devices):,} total")
 
     def begin_cell_edit(self, event):
         row_id = self.tree.identify_row(event.y)
@@ -1536,32 +1808,53 @@ class BatchReportUi(tk.Tk):
         config_path = self.save_config_from_ui()
         if config_path is None:
             return
+        log_path = Path(tempfile.gettempdir()) / (
+            f"TSYS_PAX_BATCH_REPORT_{os.getpid()}_{datetime.now():%Y%m%d%H%M%S%f}.log"
+        )
         command = (
-            [str(self.command_path), *command, "--config", str(config_path)]
+            [str(self.script_path), *command, "--config", str(config_path), "--log-file", str(log_path)]
             if getattr(sys, "frozen", False)
-            else [sys.executable, str(self.command_path), *command, "--config", str(config_path)]
+            else [sys.executable, str(self.script_path), *command, "--config", str(config_path), "--log-file", str(log_path)]
         )
         try:
             self.process = subprocess.Popen(
                 command,
                 cwd=str(self.script_path.parent),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 env=os.environ.copy(),
             )
-            threading.Thread(target=self.read_process_output, daemon=True).start()
+            threading.Thread(
+                target=self.read_process_output,
+                args=(self.process, log_path),
+                daemon=True,
+            ).start()
         except Exception as error:
             self.log(f"ERROR: {error}")
 
-    def read_process_output(self):
-        process = self.process
-        if process is None or process.stdout is None:
-            return
-        for line in process.stdout:
-            self.after(0, self.log, line.rstrip())
+    def read_process_output(self, process, log_path):
+        position = 0
+
+        def read_new_lines():
+            nonlocal position
+            if not log_path.exists():
+                return
+            with log_path.open("r", encoding="utf-8", errors="replace") as log_file:
+                log_file.seek(position)
+                lines = log_file.readlines()
+                position = log_file.tell()
+            for line in lines:
+                self.after(0, self.log, line.rstrip())
+
+        while process.poll() is None:
+            read_new_lines()
+            threading.Event().wait(0.1)
+        read_new_lines()
         exit_code = process.wait()
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
         self.after(0, self.report_finished, exit_code)
 
     def report_finished(self, exit_code):

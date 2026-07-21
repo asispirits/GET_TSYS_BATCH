@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         run: python -m py_compile get_tsys_batch.py
 
-      - name: Build windowed UI executable
+      - name: Build combined windowed executable
         shell: pwsh
         run: |
           python -m PyInstaller `
@@ -58,18 +58,6 @@ jobs:
             --windowed `
             --add-data "bottlepos_logo.png;." `
             --name TSYS_PAX_BATCH_REPORT `
-            get_tsys_batch.py
-
-      - name: Build console CLI executable
-        shell: pwsh
-        run: |
-          python -m PyInstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --console `
-            --add-data "bottlepos_logo.png;." `
-            --name TSYS_PAX_BATCH_REPORT_CLI `
             get_tsys_batch.py
 
       - name: Remove build-time API key source
@@ -88,7 +76,7 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path dist/TSYS_PAX_BATCH_REPORT.exe, dist/TSYS_PAX_BATCH_REPORT_CLI.exe, dist/config.json `
+            -Path dist/TSYS_PAX_BATCH_REPORT.exe, dist/config.json `
             -DestinationPath TSYS_PAX_BATCH_REPORT-windows.zip `
             -Force
 

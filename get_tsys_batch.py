@@ -27,6 +27,8 @@ from time import perf_counter
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import quote
 
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
 import requests
 
 try:
@@ -189,6 +191,40 @@ def write_csv(rows, path, keys):
         writer.writeheader()
         writer.writerows(rows)
     temporary_path.replace(path)
+
+
+def write_styled_xlsx(rows, path, keys, left_aligned_columns):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = path.stem[:31]
+
+    for column_index, key in enumerate(keys, start=1):
+        cell = worksheet.cell(row=1, column=column_index, value=key)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.font = Font(bold=True)
+
+    for row_index, row in enumerate(rows, start=2):
+        for column_index, key in enumerate(keys, start=1):
+            cell = worksheet.cell(row=row_index, column=column_index, value=row.get(key, ""))
+            cell.alignment = Alignment(
+                horizontal="left" if column_index in left_aligned_columns else "center",
+                vertical="center",
+            )
+
+    widths = [28, 14, 20, 18, 18, 16, 25][:len(keys)]
+    for column_index, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[chr(64 + column_index)].width = width
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    worksheet.row_dimensions[1].height = 22
+    workbook.save(temporary_path)
+    temporary_path.replace(path)
+
+
+def write_primary_xlsx(rows, path):
+    write_styled_xlsx(rows, path, EMAIL_KEYS, {7})
 
 
 class MxConnectClient:
@@ -560,14 +596,14 @@ def batch_index(records):
 
 
 def format_batch_timestamp(record):
-    created = text(record.get("created"))
-    if created:
+    raw_timestamp = text(record.get("created")) or text(record.get("batchDate"))
+    if raw_timestamp:
         try:
-            parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
             return parsed.strftime("%m/%d/%Y %I:%M:%S %p")
         except ValueError:
-            return created.replace("T", " ").rstrip("Zz")
-    return text(record.get("batchDate"))
+            return raw_timestamp.replace("T", " ").rstrip("Zz")
+    return ""
 
 
 def latest_batch_dates_by_account(records):
@@ -610,6 +646,20 @@ def write_term_history(records, path):
             }
         )
     write_csv(rows, path, ["accountNumber", "termID", "lastBatchDate"])
+
+
+def write_term_history_xlsx(records, path):
+    by_pair, _ = batch_index(records)
+    rows = []
+    for (account, term), detail in sorted(by_pair.items()):
+        rows.append(
+            {
+                "accountNumber": account,
+                "termID": term,
+                "lastBatchDate": detail["lastBatchDate"],
+            }
+        )
+    write_styled_xlsx(rows, path, ["accountNumber", "termID", "lastBatchDate"], {3})
 
 
 def write_active_roster(records, path):
@@ -1240,12 +1290,14 @@ def run_historical(args):
     print(f"Batch activity reviewed: {len(batch_records)} records; {len(accepted_batch_records)} accepted")
     print("Step 3 of 3: Writing historical reports...")
     write_raw_batch_history(accepted_batch_records, output_directory / "batch_history.csv")
-    write_term_history(accepted_batch_records, output_directory / "termid_account_history.csv")
+    term_history_path = output_directory / "termid_account_history.csv"
+    write_term_history(accepted_batch_records, term_history_path)
+    write_term_history_xlsx(accepted_batch_records, term_history_path.with_suffix(".xlsx"))
 
     roster_records = fetch_uar(client)
     write_active_roster(roster_records, output_directory / "active_tsys_roster.csv")
     print("Historical refresh complete.")
-    print(f"Reports created: 3")
+    print(f"Reports created: 4")
     print(f"Output directory: {output_directory}")
     print(f"Elapsed time: {perf_counter() - started:.1f} seconds")
 
@@ -1326,6 +1378,7 @@ def main():
     )
 
     email_path = Path(args.output).expanduser() if args.output else output_directory / f"pinpad_batch_not_closed_{batch_days}_days.csv"
+    excel_path = email_path.with_suffix(".xlsx")
     review_path = Path(args.review_output).expanduser() if args.review_output else output_directory / "needs_mapping_or_review.csv"
     raw_path = Path(args.raw_batch_output).expanduser() if args.raw_batch_output else None
 
@@ -1406,11 +1459,14 @@ def main():
 
     print("Step 5 of 5: Writing report files...")
     write_csv(email_rows, email_path, EMAIL_KEYS)
+    write_primary_xlsx(email_rows, excel_path)
     write_csv(review_rows, review_path, REVIEW_KEYS)
     batch_history_path = output_directory / "batch_history.csv"
     term_history_path = output_directory / "termid_account_history.csv"
+    term_history_xlsx_path = term_history_path.with_suffix(".xlsx")
     write_raw_batch_history(accepted_batch_records, batch_history_path)
     write_term_history(accepted_history_records, term_history_path)
+    write_term_history_xlsx(accepted_history_records, term_history_xlsx_path)
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
 
@@ -1430,7 +1486,7 @@ def main():
         ],
     )
 
-    output_paths = [email_path, review_path, batch_history_path, term_history_path, summary_path]
+    output_paths = [email_path, excel_path, review_path, batch_history_path, term_history_path, term_history_xlsx_path, summary_path]
     if raw_path:
         output_paths.append(raw_path)
     print("Report complete.")

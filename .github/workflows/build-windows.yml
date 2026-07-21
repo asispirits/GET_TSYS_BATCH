@@ -56,6 +56,7 @@ jobs:
             --clean `
             --onefile `
             --windowed `
+            --icon "bpos.ico" `
             --add-data "bottlepos_logo.png;." `
             --name TSYS_PAX_BATCH_REPORT `
             get_tsys_batch.py

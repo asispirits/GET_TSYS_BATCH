@@ -484,7 +484,7 @@ def build_technical_manual():
         doc,
         ["Component", "Responsibility"],
         [
-            ("TSYS_PAX_BATCH_REPORT.exe", "Combined windowed UI and command-line entry point. With no command it opens the UI; with --run-report or --refresh-historical it runs unattended."),
+            ("TSYS_PAX_BATCH_REPORT.exe", "Combined windowed UI and command-line entry point with the embedded Bottle POS application icon. With no command it opens the UI; with --run-report or --refresh-historical it runs unattended."),
             ("config.json", "Portable JSON settings and optional account-level display overrides."),
             ("MXConnect API", "Authentication, TSYS batch export, active merchant roster, and authorization activity."),
             ("GitHub Actions workflow", "Injects the repository secret at build time, builds the combined Windows executable, and packages it with config.json."),
@@ -618,7 +618,7 @@ def build_technical_manual():
         "Use the MXCONNECT_API_KEY environment variable only for source execution, local builds without an embedded key, or emergency fallback. Restart the UI or task process after changing environment variables.",
         "Keep the output directory access-controlled because reports contain merchant names, account-linked activity, and authorized amounts.",
         "Do not treat a CSV row as proof of a specific physical device failure. The report is intentionally conservative at the store/account level.",
-        "Keep TSYS_PAX_BATCH_REPORT.exe and config.json together. The combined executable handles both the UI and unattended report commands.",
+        "Keep TSYS_PAX_BATCH_REPORT.exe and config.json together. The combined executable handles both the UI and unattended report commands, and its Bottle POS application icon is embedded in the executable.",
     ]:
         add_list_item(doc, item, add_bullet_numbering(doc, "bullet", left=540, hanging=270), after=5, line=1.167)
 

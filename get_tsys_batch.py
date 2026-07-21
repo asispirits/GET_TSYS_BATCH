@@ -778,9 +778,9 @@ class BatchReportUi(tk.Tk):
     def __init__(self, initial_config=None):
         super().__init__()
         self.title("TSYS_PAX_BATCH_REPORT")
-        self.geometry("1500x900")
-        self.minsize(1100, 650)
-        self.configure(bg="#101216")
+        self.geometry("1160x760")
+        self.minsize(960, 620)
+        self.configure(bg="#ffffff")
 
         self.script_path = application_entrypoint()
         self.command_path = application_cli_entrypoint()
@@ -808,15 +808,84 @@ class BatchReportUi(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#101216")
-        style.configure("TLabel", background="#101216", foreground="#e5e7eb")
-        style.configure("TButton", padding=(8, 5))
-        style.configure("Treeview", background="#050607", foreground="#e5e7eb", fieldbackground="#050607", rowheight=24)
-        style.configure("Treeview.Heading", background="#263241", foreground="#ffffff")
-        style.map("Treeview", background=[("selected", "#174a66")])
+        surface = "#ffffff"
+        ink = "#1f2328"
+        accent = "#0969da"
+        control_surface = "#f6f8fa"
+        border = "#d0d7de"
+        selected = "#ddf4ff"
+
+        style.configure(".", font=("Segoe UI", 9), background=surface, foreground=ink)
+        style.configure("TFrame", background=surface)
+        style.configure("TLabel", background=surface, foreground=ink)
+        style.configure(
+            "TButton",
+            background=control_surface,
+            foreground=ink,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=(10, 6),
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("active", selected), ("pressed", "#b6e3ff"), ("disabled", "#f6f8fa")],
+            foreground=[("disabled", "#8c959f")],
+            bordercolor=[("focus", accent), ("active", accent)],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=surface,
+            foreground=ink,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            insertcolor=accent,
+            padding=(6, 5),
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", accent)],
+            lightcolor=[("focus", accent)],
+            darkcolor=[("focus", accent)],
+        )
+        style.configure(
+            "Treeview",
+            background=surface,
+            foreground=ink,
+            fieldbackground=surface,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            rowheight=26,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=control_surface,
+            foreground=ink,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            padding=(8, 6),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", selected)],
+            foreground=[("selected", ink)],
+        )
+        style.configure(
+            "TScrollbar",
+            background=control_surface,
+            troughcolor=surface,
+            bordercolor=border,
+            arrowcolor=ink,
+        )
+        style.map("TScrollbar", background=[("active", "#d8dee4")])
 
     def build_controls(self):
-        outer = ttk.Frame(self, padding=14)
+        outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
 
         top = ttk.Frame(outer)
@@ -834,7 +903,22 @@ class BatchReportUi(tk.Tk):
         options = ttk.Frame(top)
         options.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 4))
         ttk.Label(options, text="Report timeframe (days)").pack(side="left", padx=(0, 5))
-        tk.Spinbox(options, from_=1, to=365, width=5, textvariable=self.batch_days_var).pack(side="left", padx=(0, 14))
+        tk.Spinbox(
+            options,
+            from_=1,
+            to=365,
+            width=5,
+            textvariable=self.batch_days_var,
+            bg="#ffffff",
+            fg="#1f2328",
+            insertbackground="#0969da",
+            buttonbackground="#f6f8fa",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#d0d7de",
+            highlightcolor="#0969da",
+        ).pack(side="left", padx=(0, 14))
 
         actions = ttk.Frame(top)
         actions.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 8))
@@ -866,7 +950,21 @@ class BatchReportUi(tk.Tk):
         self.tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         self.tree.bind("<Double-1>", self.begin_cell_edit)
 
-        self.log_box = tk.Text(outer, height=6, bg="#050607", fg="#e5e7eb", insertbackground="#ffffff", relief="flat", wrap="word")
+        self.log_box = tk.Text(
+            outer,
+            height=6,
+            bg="#f6f8fa",
+            fg="#1f2328",
+            insertbackground="#0969da",
+            selectbackground="#ddf4ff",
+            selectforeground="#1f2328",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#d0d7de",
+            highlightcolor="#0969da",
+            wrap="word",
+        )
         self.log_box.pack(fill="x", pady=(10, 0))
 
     def log(self, message):
@@ -951,7 +1049,19 @@ class BatchReportUi(tk.Tk):
             return
         x, y, width, height = bounds
         self.commit_cell_edit()
-        self.edit_control = tk.Entry(self.tree, bg="#1f2937", fg="#ffffff", insertbackground="#ffffff", relief="solid")
+        self.edit_control = tk.Entry(
+            self.tree,
+            bg="#ffffff",
+            fg="#1f2328",
+            insertbackground="#0969da",
+            selectbackground="#ddf4ff",
+            selectforeground="#1f2328",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#0969da",
+            highlightcolor="#0969da",
+        )
         self.edit_control.insert(0, text(self.devices[device_index].get(key)))
         self.edit_control.place(x=x, y=y, width=width, height=height)
         self.edit_control.focus_set()

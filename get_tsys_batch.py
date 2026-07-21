@@ -132,7 +132,7 @@ def resolve_output_directory(config_path, config):
 
 def create_timestamped_output_directory(output_directory):
     output_directory = Path(output_directory)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%m-%d-%Y %I-%M-%S %p")
     attempt = 0
     while True:
         suffix = f"_{attempt:02d}" if attempt else ""
@@ -857,9 +857,18 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     set_font(header_run, size=7.5, color=MUTED, bold=True)
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    footer_run = footer.add_run("ASI Spirits | ")
+    footer_run = footer.add_run("Bottle POS | ")
     set_font(footer_run, size=7.5, color=MUTED)
     add_page_field(footer)
+
+    logo_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    logo_path = logo_root / "bottlepos_logo.png"
+    if logo_path.exists():
+        logo_paragraph = doc.add_paragraph()
+        logo_paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        logo_paragraph.paragraph_format.space_after = Pt(1)
+        logo_run = logo_paragraph.add_run()
+        logo_run.add_picture(str(logo_path), width=Inches(1.35))
 
     title = doc.add_paragraph()
     title.paragraph_format.space_after = Pt(1)

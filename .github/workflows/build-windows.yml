@@ -56,6 +56,7 @@ jobs:
             --clean `
             --onefile `
             --windowed `
+            --add-data "bottlepos_logo.png;." `
             --name TSYS_PAX_BATCH_REPORT `
             get_tsys_batch.py
 
@@ -67,6 +68,7 @@ jobs:
             --clean `
             --onefile `
             --console `
+            --add-data "bottlepos_logo.png;." `
             --name TSYS_PAX_BATCH_REPORT_CLI `
             get_tsys_batch.py
 

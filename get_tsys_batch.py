@@ -42,14 +42,12 @@ UAR_PATH = "/boarding/v1/uar"
 TSYS_PRODUCT_ID = "3"
 EMAIL_KEYS = [
     "STORENAME",
-    "DEVICE",
     "AMOUNT",
-    "TERMID",
     "accountNumber",
     "terminalNumber",
     "approvedAmount",
     "approvedCount",
-    "batchStatus",
+    "lastBatchDate",
 ]
 REVIEW_KEYS = [
     "reason",
@@ -432,9 +430,16 @@ def store_display_overrides(raw_devices):
     return overrides, conflicts
 
 
-def create_store_report(uar_records, raw_devices, auth_summary, current_batch_records):
+def create_store_report(
+    uar_records,
+    raw_devices,
+    auth_summary,
+    current_batch_records,
+    last_batch_by_account=None,
+):
     roster = active_tsys_roster(uar_records)
     overrides, override_conflicts = store_display_overrides(raw_devices)
+    last_batch_by_account = last_batch_by_account or {}
     batched_accounts = {
         text(record.get("accountNumber"))
         for record in current_batch_records
@@ -509,14 +514,12 @@ def create_store_report(uar_records, raw_devices, auth_summary, current_batch_re
             email_rows.append(
                 {
                     "STORENAME": store_name,
-                    "DEVICE": override.get("DEVICE", "PAX"),
                     "AMOUNT": f"{summary['amount']:.2f}",
-                    "TERMID": "",
                     "accountNumber": account,
                     "terminalNumber": terminal,
                     "approvedAmount": f"{detail['amount']:.2f}",
                     "approvedCount": detail["count"],
-                    "batchStatus": "No accepted batch for account in report window",
+                    "lastBatchDate": last_batch_by_account.get(account, ""),
                 }
             )
 
@@ -564,11 +567,29 @@ def format_batch_timestamp(record):
     if created:
         try:
             parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            suffix = " UTC" if created.endswith(("Z", "z")) else ""
-            return f"{parsed:%Y-%m-%d %H:%M:%S}{suffix}"
+            return parsed.strftime("%m/%d/%Y %I:%M:%S %p")
         except ValueError:
             return created.replace("T", " ").rstrip("Zz")
     return text(record.get("batchDate"))
+
+
+def latest_batch_dates_by_account(records):
+    latest = {}
+    for record in records:
+        account = text(record.get("accountNumber"))
+        if not account:
+            continue
+        sort_value = text(record.get("created")) or text(record.get("batchDate"))
+        existing = latest.get(account)
+        if existing is None or sort_value > existing["_sortValue"]:
+            latest[account] = {
+                "lastBatchDate": format_batch_timestamp(record),
+                "_sortValue": sort_value,
+            }
+    return {
+        account: detail["lastBatchDate"]
+        for account, detail in latest.items()
+    }
 
 
 def write_raw_batch_history(records, path):
@@ -948,7 +969,7 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     )
 
     add_heading(doc, "Important interpretation", 1)
-    interpretation = "The primary report is store/account level. TERMID is intentionally blank; terminalNumber in the detail CSV is supporting authorization activity, not proof of the exact terminal that failed to batch."
+    interpretation = "The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch."
     if review_rows:
         reason_text = ", ".join(f"{reason}: {count}" for reason, count in reason_counts.most_common(4))
         interpretation += f" Review exclusions by reason: {reason_text}."
@@ -961,16 +982,17 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
         top_primary = sorted(primary_rows, key=lambda row: parse_amount(row.get("AMOUNT")), reverse=True)[:5]
         add_table(
             doc,
-            ["Store", "Device", "Approved amount"],
+            ["Store", "Account", "Last batch", "Approved amount"],
             [
                 (
                     text(row.get("STORENAME")) or "(unnamed store)",
-                    text(row.get("DEVICE")) or "PAX",
+                    text(row.get("accountNumber")) or "-",
+                    text(row.get("lastBatchDate")) or "No history",
                     f"${parse_amount(row.get('AMOUNT')):,.2f}",
                 )
                 for row in top_primary
             ],
-            [5200, 2600, 1960],
+            [3900, 2300, 1900, 1660],
         )
         if len(primary_rows) > len(top_primary):
             add_para(doc, f"Showing the top {len(top_primary)} by approved amount; the complete list is in the primary CSV.", size=8.2, color=MUTED, italic=True, after=3)
@@ -1078,7 +1100,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
         "<tr>"
         f"<td>{cell(row.get('STORENAME'))}</td>"
         f"<td>{cell(row.get('accountNumber'))}</td>"
-        f"<td>{cell(row.get('terminalNumber'))}</td>"
+        f"<td>{cell(row.get('lastBatchDate'))}</td>"
         f"<td class=amount>${parse_amount(row.get('approvedAmount') or row.get('AMOUNT')):,.2f}</td>"
         "</tr>"
         for row in top_rows
@@ -1171,11 +1193,11 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
         <div class="card red"><div class="label">Review excluded</div><div class="value">{len(review_rows):,}</div></div>
       </section>
       <div class="two-col">
-        <section><h2>Top flagged stores</h2><div class="panel"><div class="panel-title">Approved authorization detail</div><table><thead><tr><th>Store</th><th>Account</th><th>Terminal</th><th class=amount>Amount</th></tr></thead><tbody>{top_rows_html}</tbody></table></div></section>
+        <section><h2>Top flagged stores</h2><div class="panel"><div class="panel-title">Approved authorization detail</div><table><thead><tr><th>Store</th><th>Account</th><th>Last batch</th><th class=amount>Amount</th></tr></thead><tbody>{top_rows_html}</tbody></table></div></section>
         <section><h2>Output files</h2><div class="panel"><ul class="files">{file_list_html}</ul></div></section>
       </div>
       <h2>Important interpretation</h2>
-      <div class="note">The primary report is store/account level. TERMID is intentionally blank; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
+      <div class="note">The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
       <footer>Bottle POS &nbsp;|&nbsp; TSYS_PAX_BATCH_REPORT</footer>
     </main>
   </div>
@@ -1292,6 +1314,10 @@ def main():
     config, raw_devices = load_config(config_path)
 
     batch_days = args.batch_days or int(config.get("batchLookbackDays", 3))
+    historical_days = max(
+        batch_days,
+        args.historical_days or int(config.get("historicalLookbackDays", 90)),
+    )
     auth_window = args.auth_window or text(config.get("authorizationWindow")) or "last_24_h"
     require_approved = True
     base_url = text(config.get("apiBaseUrl")) or BASE_URL
@@ -1342,6 +1368,30 @@ def main():
 
     candidate_accounts = active_accounts - batched_accounts
     print(f"Active TSYS stores with no accepted batch: {len(candidate_accounts)}")
+
+    accepted_history_records = accepted_batch_records
+    if candidate_accounts and historical_days > batch_days:
+        history_start, history_end = date_window(historical_days)
+        print(
+            f"Fetching accepted batch history for lastBatchDate ({historical_days} days)..."
+        )
+        history_records = fetch_all(
+            client,
+            batch_url(
+                base_url,
+                history_start.strftime("%Y-%m-%d"),
+                history_end.strftime("%Y-%m-%d"),
+            ),
+        )
+        accepted_history_records = [
+            record for record in history_records if is_accepted_batch(record)
+        ]
+        print(
+            f"Accepted historical batch records: {len(accepted_history_records)} "
+            f"of {len(history_records)}"
+        )
+    last_batch_by_account = latest_batch_dates_by_account(accepted_history_records)
+
     print("Fetching authorization detail for candidate stores...")
     authorization_records = fetch_all(
         client,
@@ -1356,6 +1406,7 @@ def main():
         raw_devices,
         auth_summary,
         current_records,
+        last_batch_by_account,
     )
 
     write_csv(email_rows, email_path, EMAIL_KEYS)
@@ -1363,7 +1414,7 @@ def main():
     batch_history_path = output_directory / "batch_history.csv"
     term_history_path = output_directory / "termid_account_history.csv"
     write_raw_batch_history(accepted_batch_records, batch_history_path)
-    write_term_history(accepted_batch_records, term_history_path)
+    write_term_history(accepted_history_records, term_history_path)
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
 
@@ -1420,7 +1471,7 @@ def default_config():
 class BatchReportUi(tk.Tk):
     def __init__(self, initial_config=None):
         super().__init__()
-        self.title("TSYS_PAX_BATCH_REPORT")
+        self.title("BottlePOS PAX Batch Report")
         self.geometry("1180x780")
         self.minsize(1040, 680)
         self.configure(bg="#ffffff")

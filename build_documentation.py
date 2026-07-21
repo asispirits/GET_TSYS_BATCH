@@ -434,7 +434,7 @@ def build_technical_manual():
     doc = Document()
     configure_styles(doc, "business")
     section = configure_page(doc)
-    configure_header_footer(doc, "TSYS_PAX_BATCH_REPORT | Technical Master Manual", "ASI Spirits")
+    configure_header_footer(doc, "TSYS_PAX_BATCH_REPORT | Technical Master Manual", "Bottle POS")
     set_core_properties(doc, "TSYS_PAX_BATCH_REPORT - Technical Master Manual", "Technical reference for setup, operation, API behavior, outputs, and maintenance")
 
     add_title_block(
@@ -468,10 +468,10 @@ def build_technical_manual():
         doc,
         ["File", "Purpose", "Alert-safe interpretation"],
         [
-            ("pinpad_batch_not_closed_<N>_days.csv", "Primary store-level exception report with authorization detail included.", "Rows are flagged stores/accounts with terminalNumber, approved amount, and approved count included when returned by the authorization export."),
+            ("pinpad_batch_not_closed_<N>_days.csv", "Primary store-level exception report with lastBatchDate and authorization detail included.", "Rows are flagged stores/accounts with the latest accepted batch date from the historical lookback plus terminalNumber, approved amount, and approved count when returned by the authorization export."),
             ("needs_mapping_or_review.csv", "Rows excluded from the primary report because required store display data is not safe to use.", "Review-only output. It should not be emailed as an exception list."),
             ("batch_history.csv", "Accepted batch records returned for the current report window.", "Audit trail for the batch data used by the run."),
-            ("termid_account_history.csv", "Distinct accountNumber + termID pairs and their latest batch date/time in the returned window.", "Historical reference for termID/account analysis; not used to assert a device identity."),
+            ("termid_account_history.csv", "Distinct accountNumber + termID pairs and their latest batch date/time in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical reference for termID/account analysis; not used to assert a device identity."),
             ("TSYS PAX BATCH REPORT SUMMARY.html", "Standalone themed HTML summary of the CSV outputs created by the current run.", "Convenience summary; the CSV files remain the detailed source outputs."),
         ],
         [2050, 3000, 4310],
@@ -484,14 +484,14 @@ def build_technical_manual():
         doc,
         ["Component", "Responsibility"],
         [
-            ("TSYS_PAX_BATCH_REPORT.exe", "Combined windowed UI and command-line entry point with the embedded Bottle POS application icon. With no command it opens the UI; with --run-report or --refresh-historical it runs unattended."),
+            ("BottlePOS PAX Batch Report.exe", "Combined windowed UI and command-line entry point with the embedded Bottle POS application icon. With no command it opens the UI; with --run-report or --refresh-historical it runs unattended."),
             ("config.json", "Portable JSON settings and optional account-level display overrides."),
             ("MXConnect API", "Authentication, TSYS batch export, active merchant roster, and authorization activity."),
             ("GitHub Actions workflow", "Injects the repository secret at build time, builds the combined Windows executable, and packages it with config.json."),
         ],
         [2700, 6660],
     )
-    add_body(doc, "The UI starts the same executable in report mode when the program is frozen into an .exe. The packaged deployment therefore requires only TSYS_PAX_BATCH_REPORT.exe and config.json in the same folder. The UI passes an internal temporary log-file path so report progress remains visible in the UI even though the executable is windowed.")
+    add_body(doc, "The UI starts the same executable in report mode when the program is frozen into an .exe. The packaged deployment therefore requires only BottlePOS PAX Batch Report.exe and config.json in the same folder. The UI passes an internal temporary log-file path so report progress remains visible in the UI even though the executable is windowed.")
 
     add_heading(doc, "4. MXConnect API contract", 1)
     add_table(
@@ -519,11 +519,12 @@ def build_technical_manual():
         "Build the candidate set as active TSYS accounts minus accounts with at least one accepted batch record in the report window.",
         "Fetch authorization detail only for candidate accounts. When requireAuthorizationActivity is enabled, only records with authorizationResponseStatus=approved are included.",
         "Aggregate approved authorized amount and count by account and terminalNumber, then roll the amounts up to the store/account for the primary CSV.",
+        "Fetch accepted batch history for the configured historical lookback when candidates exist. Use the latest accepted batch timestamp per account for lastBatchDate and the termID/account history file.",
         "Use the active roster location name as the authoritative store name. Apply a configured URL, store-name, or device value only as an optional display override for a known accountNumber.",
         "Write the primary row only when the account is in the active roster, the store name is available, and there is no conflicting configured display override.",
     ]:
         add_list_item(doc, item, num, after=5, line=1.167)
-    add_note(doc, "Important.", "The primary CSV leaves TERMID blank by design. The current reliable evidence supports store/account exception reporting, not an exact terminal-to-batch failure claim.", fill=RED_FILL, color=RED)
+    add_note(doc, "Important.", "The primary CSV is store/account level. lastBatchDate is historical context, while terminalNumber and approved authorization fields are supporting activity detail; the report does not claim an exact terminal-to-batch failure.", fill=RED_FILL, color=RED)
 
     add_heading(doc, "6. Time windows and amount semantics", 1)
     add_body(doc, "batchLookbackDays controls the batch lookback used by the primary report. The date-window helper calculates a local cutoff at 04:00 and passes the resulting inclusive start and end dates to the TSYS batch export. The report UI exposes this as Report timeframe (days), with a range of 1 through 365.")
@@ -548,7 +549,7 @@ def build_technical_manual():
             ("apiBaseUrl", "https://api.mxconnect.com", "MXConnect base URL; authentication and report paths are appended by the program."),
             ("apiKeyEnvironmentVariable", "MXCONNECT_API_KEY", "Fallback environment variable name for source or locally built executables. Official Windows builds use the embedded build-time key first."),
             ("batchLookbackDays", "3", "Primary batch report lookback. UI changes are saved here."),
-            ("historicalLookbackDays", "90", "Lookback for the separate historical refresh action."),
+            ("historicalLookbackDays", "90", "Lookback used for lastBatchDate and the separate historical refresh action."),
             ("authorizationWindow", "last_24_h", "MXConnect quick authorization window for candidate accounts."),
             ("requireAuthorizationActivity", "true", "The current report requires approved authorization activity; the UI enforces true."),
             ("outputDirectory", "./tsys-auditdata", "Output folder. Relative paths are resolved beside config.json."),
@@ -561,9 +562,9 @@ def build_technical_manual():
     add_heading(doc, "8. UI operation", 1)
     num = add_bullet_numbering(doc, "decimal", left=540, hanging=270)
     for item in [
-        "Place TSYS_PAX_BATCH_REPORT.exe and config.json in the same folder.",
+        "Place BottlePOS PAX Batch Report.exe and config.json in the same folder.",
         "For the official Windows package, no API-key setup is required. The key is embedded during the GitHub Actions build. If running the Python source or an executable built without the repository secret, set MXCONNECT_API_KEY in the Windows User or Machine environment and restart the program after changing it.",
-        "Open TSYS_PAX_BATCH_REPORT.exe. Use Open config if config.json is not beside the program, or use the displayed path.",
+        "Open BottlePOS PAX Batch Report.exe. Use Open config if config.json is not beside the program, or use the displayed path.",
         "Choose the output folder and set Report timeframe (days). The default is 3.",
         "Click Save config before running. The UI stores the output folder as a portable relative path when it is under the config folder.",
         "Click Run report. Read the log panel for authentication, fetch progress, counts, and output paths.",
@@ -573,7 +574,7 @@ def build_technical_manual():
 
     add_heading(doc, "9. Command-line and Task Scheduler operation", 1)
     add_body(doc, "The combined executable is intended for unattended execution when passed command-line arguments. It uses the same config and API-key selection as the UI: the official Windows build uses its embedded key, while source or local fallback builds can use MXCONNECT_API_KEY.")
-    add_code(doc, '''TSYS_PAX_BATCH_REPORT.exe --run-report --config "C:\\TSYS_PAX_BATCH_REPORT\\config.json"''')
+    add_code(doc, '''"BottlePOS PAX Batch Report.exe" --run-report --config "C:\\TSYS_PAX_BATCH_REPORT\\config.json"''')
     add_body(doc, "Useful command-line options:")
     add_table(
         doc,
@@ -583,7 +584,7 @@ def build_technical_manual():
             ("--refresh-historical", "Refresh historical batch, termID/account, and active roster CSV files."),
             ("--config PATH", "Use a specific config.json path."),
             ("--batch-days N", "Override batchLookbackDays for one run."),
-            ("--historical-days N", "Override historicalLookbackDays for one refresh."),
+            ("--historical-days N", "Override historicalLookbackDays for lastBatchDate and a historical refresh."),
             ("--auth-window VALUE", "Override authorizationWindow for one run."),
             ("--output PATH", "Override the primary email CSV path."),
             ("--review-output PATH", "Override the review CSV path."),
@@ -591,7 +592,7 @@ def build_technical_manual():
         ],
         [2700, 6660],
     )
-    add_body(doc, "For Task Scheduler, set Start in to the folder containing the executable, use TSYS_PAX_BATCH_REPORT.exe as the program, and include --run-report --config followed by the full config path in the arguments. With the official Windows package, the scheduled account needs access to the executable, config file, and output folder; it does not need an API-key environment variable.")
+    add_body(doc, "For Task Scheduler, set Start in to the folder containing the executable, use BottlePOS PAX Batch Report.exe as the program, and include --run-report --config followed by the full config path in the arguments. With the official Windows package, the scheduled account needs access to the executable, config file, and output folder; it does not need an API-key environment variable.")
 
     add_heading(doc, "10. Output field reference", 1)
     add_table(
@@ -599,13 +600,11 @@ def build_technical_manual():
         ["File / field", "Meaning", "Use / caution"],
         [
             ("Primary / STORENAME", "Configured store-name override or active roster location name.", "Authoritative display label for the store row."),
-            ("Primary / DEVICE", "Configured display device or PAX default.", "Display text only; not a device identity assertion."),
             ("Primary / AMOUNT", "Sum of approved authorizedAmount values for the account.", "Exposure/supporting amount, not batch amount."),
-            ("Primary / TERMID", "Blank in the current implementation.", "Blank intentionally to prevent unsupported terminal claims."),
             ("Primary / accountNumber", "TSYS merchant account associated with the flagged store.", "The account-level batching identity used by the report."),
-            ("Detail / terminalNumber", "Terminal number returned in authorization detail.", "Supporting activity detail; not proof of unbatched terminal."),
-            ("Detail / approvedAmount and approvedCount", "Approved authorization amount and count for the terminalNumber row.", "Supporting activity detail, not batch totals."),
-            ("Primary / batchStatus", "Current account-level batch result for the report window.", "States that no accepted batch was found for the account in the selected window."),
+            ("Primary / lastBatchDate", "Latest accepted batch timestamp for the account in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical context; blank when no accepted batch was returned in that lookback."),
+            ("Primary / terminalNumber", "Terminal number returned in authorization detail.", "Supporting activity detail; not proof of an unbatched terminal."),
+            ("Primary / approvedAmount and approvedCount", "Approved authorization amount and count for the terminalNumber row.", "Supporting activity detail, not batch totals."),
             ("History / termID", "termID returned by accepted batch records.", "Used for historical account/term analysis only."),
         ],
         [2500, 3500, 3360],
@@ -618,7 +617,7 @@ def build_technical_manual():
         "Use the MXCONNECT_API_KEY environment variable only for source execution, local builds without an embedded key, or emergency fallback. Restart the UI or task process after changing environment variables.",
         "Keep the output directory access-controlled because reports contain merchant names, account-linked activity, and authorized amounts.",
         "Do not treat a CSV row as proof of a specific physical device failure. The report is intentionally conservative at the store/account level.",
-        "Keep TSYS_PAX_BATCH_REPORT.exe and config.json together. The combined executable handles both the UI and unattended report commands, and its Bottle POS application icon is embedded in the executable.",
+        "Keep BottlePOS PAX Batch Report.exe and config.json together. The combined executable handles both the UI and unattended report commands, and its Bottle POS application icon is embedded in the executable.",
     ]:
         add_list_item(doc, item, add_bullet_numbering(doc, "bullet", left=540, hanging=270), after=5, line=1.167)
 
@@ -630,7 +629,7 @@ def build_technical_manual():
         "Select Build TSYS_PAX_BATCH_REPORT for Windows and use Run workflow against main for a manual build.",
         "The workflow installs requests and PyInstaller, creates a temporary embedded_api_key.py module from the MXCONNECT_API_KEY repository secret, verifies Python compilation, and builds one combined windowed executable.",
         "The temporary API-key source module is removed after the executable is built. The key is not included in config.json or the repository checkout.",
-        "The workflow copies config.template.json to dist/config.json and packages the executable and config.json as TSYS_PAX_BATCH_REPORT-windows.zip.",
+        "The workflow copies config.template.json to dist/config.json and packages the executable and config.json as BottlePOS_PAX_BATCH_REPORT-windows.zip.",
         "Download the artifact from a successful run. The artifact is not committed to the repository.",
     ]:
         add_list_item(doc, item, num, after=5, line=1.167)
@@ -655,7 +654,7 @@ def build_technical_manual():
     add_heading(doc, "14. Known limitations and interpretation", 1)
     for item in [
         "The report detects account/store-level exceptions. It does not identify the exact device that did not batch.",
-        "TERMID is blank in the primary output by design. The detail file may contain terminalNumber from authorization activity, but that field is not joined to a batch failure claim.",
+        "lastBatchDate is historical context from the configured lookback and may be blank when no accepted batch was returned in that period. terminalNumber and authorization detail are not joined to a specific batch failure claim.",
         "The batch export may contain termID and accountNumber, but the current alert decision uses the presence of any accepted batch for the account in the selected window.",
         "URL is optional display data maintained in config.json; it is not required for the API decision.",
         "The historical files represent the records returned for the chosen lookback and are useful for review, not a complete permanent TSYS ledger.",
@@ -680,7 +679,7 @@ def build_user_guide():
     doc = Document()
     configure_styles(doc, "compact")
     configure_page(doc)
-    configure_header_footer(doc, "TSYS_PAX_BATCH_REPORT | User Guide", "ASI Spirits")
+    configure_header_footer(doc, "TSYS_PAX_BATCH_REPORT | User Guide", "Bottle POS")
     set_core_properties(doc, "TSYS_PAX_BATCH_REPORT - User Setup and Operation Guide", "Short operator guide for setup, daily use, and output interpretation")
 
     add_title_block(
@@ -700,7 +699,7 @@ def build_user_guide():
     add_body(doc, "Keep these two files together in the same folder:")
     bullet = add_bullet_numbering(doc, "bullet", left=540, hanging=270)
     for item in [
-        "TSYS_PAX_BATCH_REPORT.exe - the setup, manual-run UI, and unattended/Task Scheduler runner.",
+        "BottlePOS PAX Batch Report.exe - the setup, manual-run UI, and unattended/Task Scheduler runner.",
         "config.json - the settings file saved by the UI.",
     ]:
         add_list_item(doc, item, bullet, after=4, line=1.25)
@@ -711,7 +710,7 @@ def build_user_guide():
     add_heading(doc, "3. First-time UI setup", 1)
     number = add_bullet_numbering(doc, "decimal", left=540, hanging=270)
     for item in [
-        "Double-click TSYS_PAX_BATCH_REPORT.exe.",
+        "Double-click BottlePOS PAX Batch Report.exe.",
         "Confirm Config file points to the config.json beside the program. Use Open config if needed.",
         "Choose the Output folder where CSV files should be written.",
         "Set Report timeframe (days). Use 3 for the normal three-day report.",
@@ -728,15 +727,15 @@ def build_user_guide():
         doc,
         ["File", "What to use it for"],
         [
-            ("pinpad_batch_not_closed_3_days.csv", "Primary exception report with terminalNumber and approved authorization detail included on each row when returned."),
+            ("pinpad_batch_not_closed_3_days.csv", "Primary exception report with lastBatchDate plus terminalNumber and approved authorization detail included on each row when returned."),
             ("needs_mapping_or_review.csv", "Rows excluded from the primary list because store information was missing or conflicting. Fix the issue before treating them as reportable."),
             ("batch_history.csv", "Accepted batch records used by the current run."),
-            ("termid_account_history.csv", "Account/termID history from accepted batch records, including the latest batch date and time for each pair."),
+            ("termid_account_history.csv", "Account/termID history from accepted batch records, including the latest batch date and time for each pair in MM/DD/YYYY HH:MM:SS AM/PM format."),
             ("TSYS PAX BATCH REPORT SUMMARY.html", "Standalone themed HTML summary of the CSV outputs created by the current run."),
         ],
         [2850, 6510],
     )
-    add_body(doc, "The primary CSV columns are STORENAME, DEVICE, AMOUNT, TERMID, accountNumber, terminalNumber, approvedAmount, approvedCount, and batchStatus. TERMID is intentionally blank in this version. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail for the terminalNumber row. The values are not batch totals.")
+    add_body(doc, "The primary CSV columns are STORENAME, AMOUNT, accountNumber, terminalNumber, approvedAmount, approvedCount, and lastBatchDate. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail for the terminalNumber row. lastBatchDate is the latest accepted batch timestamp found in the configured historical lookback and uses MM/DD/YYYY HH:MM:SS AM/PM. These values are not batch totals or proof of a specific terminal failure.")
     add_body(doc, "Each report run creates a new timestamped subfolder under the configured output folder using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If two runs occur in the same second, the later folder receives a suffix such as _01, so prior outputs are not overwritten.")
 
     add_heading(doc, "6. Optional display overrides", 1)
@@ -745,7 +744,7 @@ def build_user_guide():
 
     add_heading(doc, "7. Scheduled operation", 1)
     add_body(doc, "For Windows Task Scheduler, create a task that runs the combined executable with the same config file:")
-    add_code(doc, '''TSYS_PAX_BATCH_REPORT.exe --run-report --config "C:\\TSYS_PAX_BATCH_REPORT\\config.json"''')
+    add_code(doc, '''"BottlePOS PAX Batch Report.exe" --run-report --config "C:\\TSYS_PAX_BATCH_REPORT\\config.json"''')
     add_body(doc, "Set the task's Start in folder to the folder containing the executables. The account running the task needs access to the executables, config.json, and output folder. No API-key environment variable is required when using the official Windows package.")
 
     add_heading(doc, "8. Historical refresh", 1)

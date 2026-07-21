@@ -58,7 +58,7 @@ jobs:
             --windowed `
             --icon "bpos.ico" `
             --add-data "bottlepos_logo.png;." `
-            --name TSYS_PAX_BATCH_REPORT `
+            --name "BottlePOS PAX Batch Report" `
             get_tsys_batch.py
 
       - name: Remove build-time API key source
@@ -77,13 +77,13 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path dist/TSYS_PAX_BATCH_REPORT.exe, dist/config.json `
-            -DestinationPath TSYS_PAX_BATCH_REPORT-windows.zip `
+            -Path "dist/BottlePOS PAX Batch Report.exe", dist/config.json `
+            -DestinationPath BottlePOS_PAX_BATCH_REPORT-windows.zip `
             -Force
 
       - name: Upload Windows test bundle
         uses: actions/upload-artifact@v4
         with:
-          name: TSYS_PAX_BATCH_REPORT-windows
-          path: TSYS_PAX_BATCH_REPORT-windows.zip
+          name: BottlePOS_PAX_BATCH_REPORT-windows
+          path: BottlePOS_PAX_BATCH_REPORT-windows.zip
           if-no-files-found: error

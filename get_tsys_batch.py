@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from collections import Counter, defaultdict
 from argparse import ArgumentParser
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -572,6 +573,432 @@ def write_active_roster(records, path):
     )
 
 
+def read_csv_rows(path):
+    if not path:
+        return []
+    path = Path(path)
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8-sig", newline="") as input_file:
+        return list(csv.DictReader(input_file))
+
+
+def write_summary_docx(path, batch_days, auth_window, report_start, report_end, csv_specs):
+    try:
+        from docx import Document
+        from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Inches, Pt, RGBColor
+    except ImportError as error:
+        raise RuntimeError("python-docx is required to generate the DOCX summary.") from error
+
+    NAVY = "0B2545"
+    BLUE = "2E74B5"
+    DARK_BLUE = "1F4D78"
+    INK = "1F2328"
+    MUTED = "5B6573"
+    LIGHT_BLUE = "E8EEF5"
+    LIGHT_GRAY = "F6F8FA"
+    BORDER = "D0D7DE"
+    CAUTION_FILL = "FFF7D6"
+    CAUTION = "7A5A00"
+    RED_FILL = "FDECEC"
+    RED = "9B1C1C"
+    CONTENT_WIDTH_DXA = 9360
+    TABLE_INDENT_DXA = 120
+
+    def set_font(run, name="Calibri", size=10.5, color=INK, bold=None, italic=None):
+        run.font.name = name
+        run._element.get_or_add_rPr().rFonts.set(qn("w:ascii"), name)
+        run._element.get_or_add_rPr().rFonts.set(qn("w:hAnsi"), name)
+        run.font.size = Pt(size)
+        run.font.color.rgb = RGBColor.from_string(color)
+        if bold is not None:
+            run.bold = bold
+        if italic is not None:
+            run.italic = italic
+
+    def set_cell_shading(cell, fill):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        shd = tc_pr.find(qn("w:shd"))
+        if shd is None:
+            shd = OxmlElement("w:shd")
+            tc_pr.append(shd)
+        shd.set(qn("w:fill"), fill)
+
+    def set_cell_margins(cell, top=80, start=120, bottom=80, end=120):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        tc_mar = tc_pr.find(qn("w:tcMar"))
+        if tc_mar is None:
+            tc_mar = OxmlElement("w:tcMar")
+            tc_pr.append(tc_mar)
+        for name, value in (("top", top), ("start", start), ("bottom", bottom), ("end", end)):
+            node = tc_mar.find(qn(f"w:{name}"))
+            if node is None:
+                node = OxmlElement(f"w:{name}")
+                tc_mar.append(node)
+            node.set(qn("w:w"), str(value))
+            node.set(qn("w:type"), "dxa")
+
+    def set_cell_width(cell, width):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        tc_w = tc_pr.find(qn("w:tcW"))
+        if tc_w is None:
+            tc_w = OxmlElement("w:tcW")
+            tc_pr.append(tc_w)
+        tc_w.set(qn("w:w"), str(width))
+        tc_w.set(qn("w:type"), "dxa")
+
+    def set_table_geometry(table, widths):
+        table.autofit = False
+        tbl_pr = table._tbl.tblPr
+        tbl_w = tbl_pr.find(qn("w:tblW"))
+        if tbl_w is None:
+            tbl_w = OxmlElement("w:tblW")
+            tbl_pr.append(tbl_w)
+        tbl_w.set(qn("w:w"), str(sum(widths)))
+        tbl_w.set(qn("w:type"), "dxa")
+        tbl_ind = tbl_pr.find(qn("w:tblInd"))
+        if tbl_ind is None:
+            tbl_ind = OxmlElement("w:tblInd")
+            tbl_pr.append(tbl_ind)
+        tbl_ind.set(qn("w:w"), str(TABLE_INDENT_DXA))
+        tbl_ind.set(qn("w:type"), "dxa")
+        tbl_layout = tbl_pr.find(qn("w:tblLayout"))
+        if tbl_layout is None:
+            tbl_layout = OxmlElement("w:tblLayout")
+            tbl_pr.append(tbl_layout)
+        tbl_layout.set(qn("w:type"), "fixed")
+        borders = tbl_pr.find(qn("w:tblBorders"))
+        if borders is None:
+            borders = OxmlElement("w:tblBorders")
+            tbl_pr.append(borders)
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            node = borders.find(qn(f"w:{edge}"))
+            if node is None:
+                node = OxmlElement(f"w:{edge}")
+                borders.append(node)
+            node.set(qn("w:val"), "single")
+            node.set(qn("w:sz"), "4")
+            node.set(qn("w:space"), "0")
+            node.set(qn("w:color"), BORDER)
+        grid = table._tbl.tblGrid
+        for child in list(grid):
+            grid.remove(child)
+        for width in widths:
+            col = OxmlElement("w:gridCol")
+            col.set(qn("w:w"), str(width))
+            grid.append(col)
+        for row_index, row in enumerate(table.rows):
+            if row_index == 0:
+                tr_pr = row._tr.get_or_add_trPr()
+                header = OxmlElement("w:tblHeader")
+                header.set(qn("w:val"), "true")
+                tr_pr.append(header)
+            for cell, width in zip(row.cells, widths):
+                set_cell_width(cell, width)
+                set_cell_margins(cell)
+                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                if row_index == 0:
+                    set_cell_shading(cell, LIGHT_BLUE)
+
+    def add_para(doc, value, size=10.5, color=INK, bold=False, italic=False, after=6, align=None):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(after)
+        paragraph.paragraph_format.line_spacing = 1.25
+        if align is not None:
+            paragraph.alignment = align
+        run = paragraph.add_run(str(value))
+        set_font(run, size=size, color=color, bold=bold, italic=italic)
+        return paragraph
+
+    def add_heading(doc, value, level=1):
+        paragraph = doc.add_paragraph(value, style=f"Heading {level}")
+        return paragraph
+
+    def add_note(doc, label, value, fill=LIGHT_GRAY, label_color=NAVY):
+        table = doc.add_table(rows=1, cols=1)
+        set_table_geometry(table, [CONTENT_WIDTH_DXA])
+        cell = table.cell(0, 0)
+        set_cell_shading(cell, fill)
+        paragraph = cell.paragraphs[0]
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.15
+        label_run = paragraph.add_run(label + " ")
+        set_font(label_run, size=10.5, color=label_color, bold=True)
+        value_run = paragraph.add_run(value)
+        set_font(value_run, size=10.5, color=INK)
+        add_para(doc, "", after=2)
+
+    def add_table(doc, headers, rows, widths):
+        table = doc.add_table(rows=1, cols=len(headers))
+        for cell, header in zip(table.rows[0].cells, headers):
+            paragraph = cell.paragraphs[0]
+            paragraph.paragraph_format.space_after = Pt(0)
+            run = paragraph.add_run(header)
+            set_font(run, size=9.2, color=NAVY, bold=True)
+        for row_data in rows:
+            cells = table.add_row().cells
+            for cell, value in zip(cells, row_data):
+                paragraph = cell.paragraphs[0]
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = 1.05
+                run = paragraph.add_run(str(value))
+                set_font(run, size=9.2, color=INK)
+        set_table_geometry(table, widths)
+        add_para(doc, "", after=2)
+        return table
+
+    def add_page_field(paragraph):
+        run = paragraph.add_run("Page ")
+        set_font(run, size=8.5, color=MUTED)
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        instruction = OxmlElement("w:instrText")
+        instruction.set(qn("xml:space"), "preserve")
+        instruction.text = " PAGE "
+        end = OxmlElement("w:fldChar")
+        end.set(qn("w:fldCharType"), "end")
+        run._r.append(begin)
+        run._r.append(instruction)
+        run._r.append(end)
+
+    csv_data = []
+    for label, csv_path, description in csv_specs:
+        if csv_path:
+            path_value = Path(csv_path)
+            csv_data.append((label, path_value, description, read_csv_rows(path_value)))
+    data_by_label = {label: rows for label, _, _, rows in csv_data}
+    primary_rows = data_by_label.get("Primary exception report", [])
+    review_rows = data_by_label.get("Store review", [])
+    detail_rows = data_by_label.get("Authorization detail", [])
+    accepted_batch_rows = data_by_label.get("Accepted batch history", [])
+    raw_batch_rows = data_by_label.get("Raw batch export", [])
+    term_rows = data_by_label.get("Term/account history", [])
+
+    primary_total = sum(parse_amount(row.get("AMOUNT")) for row in primary_rows)
+    detail_total = sum(parse_amount(row.get("approvedAmount")) for row in detail_rows)
+    reason_counts = Counter(text(row.get("reason")) or "UNSPECIFIED" for row in review_rows)
+    term_accounts = defaultdict(set)
+    for row in accepted_batch_rows:
+        term = text(row.get("termID"))
+        account = text(row.get("accountNumber"))
+        if term and account:
+            term_accounts[term].add(account)
+    ambiguous_terms = [
+        (term, ", ".join(sorted(accounts)))
+        for term, accounts in sorted(term_accounts.items())
+        if len(accounts) > 1
+    ]
+    rejected_raw = sum(1 for row in raw_batch_rows if not is_accepted_batch(row)) if raw_batch_rows else 0
+    batch_sales_total = sum(parse_amount(row.get("salesAmount")) for row in accepted_batch_rows)
+    batch_net_total = sum(parse_amount(row.get("netAmount")) for row in accepted_batch_rows)
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Inches(8.5)
+    section.page_height = Inches(11)
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    section.header_distance = Inches(0.492)
+    section.footer_distance = Inches(0.492)
+
+    normal = doc.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal._element.rPr.rFonts.set(qn("w:ascii"), "Calibri")
+    normal._element.rPr.rFonts.set(qn("w:hAnsi"), "Calibri")
+    normal.font.size = Pt(10.5)
+    normal.font.color.rgb = RGBColor.from_string(INK)
+    normal.paragraph_format.space_after = Pt(6)
+    normal.paragraph_format.line_spacing = 1.25
+    for style_name, size, color, before, after in (
+        ("Heading 1", 16, BLUE, 18, 10),
+        ("Heading 2", 13, BLUE, 14, 7),
+        ("Heading 3", 12, DARK_BLUE, 10, 5),
+    ):
+        style = doc.styles[style_name]
+        style.font.name = "Calibri"
+        style._element.rPr.rFonts.set(qn("w:ascii"), "Calibri")
+        style._element.rPr.rFonts.set(qn("w:hAnsi"), "Calibri")
+        style.font.size = Pt(size)
+        style.font.bold = True
+        style.font.color.rgb = RGBColor.from_string(color)
+        style.paragraph_format.space_before = Pt(before)
+        style.paragraph_format.space_after = Pt(after)
+        style.paragraph_format.keep_with_next = True
+
+    header = section.header.paragraphs[0]
+    header.paragraph_format.space_after = Pt(3)
+    header_run = header.add_run("TSYS_PAX_BATCH_REPORT | Run Summary")
+    set_font(header_run, size=8.5, color=MUTED, bold=True)
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    footer_run = footer.add_run("ASI Spirits | ")
+    set_font(footer_run, size=8.5, color=MUTED)
+    add_page_field(footer)
+
+    title = doc.add_paragraph()
+    title.paragraph_format.space_after = Pt(4)
+    title_run = title.add_run("TSYS_PAX_BATCH_REPORT")
+    set_font(title_run, size=25, color=NAVY, bold=True)
+    subtitle = doc.add_paragraph()
+    subtitle.paragraph_format.space_after = Pt(12)
+    subtitle_run = subtitle.add_run("Generated summary of the current CSV outputs")
+    set_font(subtitle_run, size=13.5, color=MUTED)
+    add_para(doc, f"Generated: {datetime.now():%Y-%m-%d %H:%M}", size=9.5, color=MUTED, after=2)
+    add_para(doc, f"Batch window: {report_start:%Y-%m-%d} through {report_end:%Y-%m-%d}", size=9.5, color=MUTED, after=2)
+    add_para(doc, f"Authorization window: {auth_window}", size=9.5, color=MUTED, after=10)
+
+    if primary_rows:
+        add_note(
+            doc,
+            "Primary finding.",
+            f"{len(primary_rows)} store(s) met the report criteria, representing ${primary_total:,.2f} in approved authorization exposure during the authorization window. The primary report is store/account level; it does not prove which physical terminal failed to batch.",
+            fill=CAUTION_FILL,
+            label_color=CAUTION,
+        )
+    else:
+        add_note(
+            doc,
+            "Primary finding.",
+            "No stores met the report criteria for this run. No active TSYS account had both approved authorization activity in the authorization window and no accepted batch in the selected batch window.",
+            fill=LIGHT_GRAY,
+            label_color=NAVY,
+        )
+
+    add_heading(doc, "1. Executive summary", 1)
+    add_table(
+        doc,
+        ["Measure", "Result"],
+        [
+            ("Stores in primary exception report", f"{len(primary_rows):,}"),
+            ("Approved authorization exposure", f"${primary_total:,.2f}"),
+            ("Authorization detail rows", f"{len(detail_rows):,}"),
+            ("Review rows excluded from primary report", f"{len(review_rows):,}"),
+            ("Accepted batch records in window", f"{len(accepted_batch_rows):,}"),
+            ("Rejected raw batch records", f"{rejected_raw:,}" if raw_batch_rows else "Raw export not requested"),
+            ("Accepted batch sales total", f"${batch_sales_total:,.2f}"),
+            ("Accepted batch net total", f"${batch_net_total:,.2f}"),
+            ("Account + termID pairs in accepted history", f"{len(term_rows):,}"),
+            ("termID values reused across accounts", f"{len(ambiguous_terms):,}"),
+        ],
+        [4600, 4760],
+    )
+
+    add_heading(doc, "2. Important findings", 1)
+    findings = [
+        ("Primary exception count", f"{len(primary_rows):,} store(s) are in the primary CSV."),
+        ("Authorization exposure", f"${primary_total:,.2f} total approved authorization amount is associated with those store accounts."),
+        ("Terminal interpretation", "The primary TERMID field is intentionally blank; terminal-level authorization detail is supporting evidence only."),
+        ("Review exclusions", f"{len(review_rows):,} row(s) were excluded from the primary CSV because store display data was missing or conflicting."),
+        ("Batch evidence", f"{len(accepted_batch_rows):,} accepted batch record(s) were used to exclude accounts that batched in the selected window."),
+        ("Term/account reuse", f"{len(ambiguous_terms):,} termID value(s) appeared under multiple account numbers in the accepted batch history."),
+    ]
+    add_table(doc, ["Finding", "Interpretation"], findings, [3000, 6360])
+
+    add_heading(doc, "3. Stores requiring review", 1)
+    if primary_rows:
+        top_primary = sorted(primary_rows, key=lambda row: parse_amount(row.get("AMOUNT")), reverse=True)[:50]
+        add_table(
+            doc,
+            ["Store", "Device", "Approved amount"],
+            [
+                (
+                    text(row.get("STORENAME")) or "(unnamed store)",
+                    text(row.get("DEVICE")) or "PAX",
+                    f"${parse_amount(row.get('AMOUNT')):,.2f}",
+                )
+                for row in top_primary
+            ],
+            [5600, 1500, 2260],
+        )
+        if len(primary_rows) > len(top_primary):
+            add_para(doc, f"The table shows the top {len(top_primary)} stores by approved amount. The complete list is in the primary CSV.", size=9.2, color=MUTED, italic=True)
+    else:
+        add_para(doc, "No primary exception rows were generated.")
+
+    add_heading(doc, "4. Authorization detail", 1)
+    if detail_rows:
+        top_detail = sorted(detail_rows, key=lambda row: parse_amount(row.get("approvedAmount")), reverse=True)[:50]
+        add_para(doc, f"The detail CSV contains {len(detail_rows):,} terminal-level authorization row(s), totaling ${detail_total:,.2f} in approved authorization activity.")
+        add_table(
+            doc,
+            ["Store", "Terminal number", "Approved amount", "Count"],
+            [
+                (
+                    text(row.get("STORENAME")) or "(unnamed store)",
+                    text(row.get("terminalNumber")),
+                    f"${parse_amount(row.get('approvedAmount')):,.2f}",
+                    text(row.get("approvedCount")),
+                )
+                for row in top_detail
+            ],
+            [4000, 1800, 2100, 1460],
+        )
+        if len(detail_rows) > len(top_detail):
+            add_para(doc, f"The table shows the top {len(top_detail)} authorization detail rows by approved amount. The complete detail is in in_use_not_batched_detail.csv.", size=9.2, color=MUTED, italic=True)
+    else:
+        add_para(doc, "No authorization detail rows were generated.")
+
+    add_heading(doc, "5. Review and excluded rows", 1)
+    if review_rows:
+        reason_rows = [(reason, count) for reason, count in reason_counts.most_common()]
+        add_table(doc, ["Review reason", "Rows"], reason_rows, [7000, 2360])
+        review_sample = review_rows[:50]
+        add_table(
+            doc,
+            ["Reason", "Store", "Account", "Details"],
+            [
+                (
+                    text(row.get("reason")),
+                    text(row.get("STORENAME")),
+                    text(row.get("accountNumber")),
+                    text(row.get("details")),
+                )
+                for row in review_sample
+            ],
+            [2450, 2450, 1800, 2660],
+        )
+        if len(review_rows) > len(review_sample):
+            add_para(doc, f"The table shows the first {len(review_sample)} review rows. The complete list is in needs_mapping_or_review.csv.", size=9.2, color=MUTED, italic=True)
+    else:
+        add_note(doc, "Review status.", "No rows were excluded to needs_mapping_or_review.csv.", fill=LIGHT_GRAY, label_color=NAVY)
+
+    add_heading(doc, "6. Batch and term/account history", 1)
+    add_para(doc, f"The accepted batch history contains {len(accepted_batch_rows):,} row(s). These records are the batch evidence used to exclude accounts from the primary exception list.")
+    if ambiguous_terms:
+        add_note(doc, "TermID reuse finding.", f"{len(ambiguous_terms):,} termID value(s) were associated with more than one account number in the accepted batch history. This is historical review information and is not used to claim a physical device identity.", fill=RED_FILL, label_color=RED)
+        add_table(doc, ["termID", "Accounts observed"], ambiguous_terms[:50], [2200, 7160])
+        if len(ambiguous_terms) > 50:
+            add_para(doc, "Only the first 50 reused termID values are shown; see termid_account_history.csv for the full account/term history.", size=9.2, color=MUTED, italic=True)
+    else:
+        add_note(doc, "TermID reuse finding.", "No termID values were associated with multiple account numbers in the accepted batch history for this run.", fill=LIGHT_GRAY, label_color=NAVY)
+
+    add_heading(doc, "7. CSV inventory", 1)
+    add_table(
+        doc,
+        ["CSV output", "Rows", "Purpose"],
+        [(label, f"{len(rows):,}", description) for label, _, description, rows in csv_data],
+        [2800, 1000, 5560],
+    )
+    add_para(doc, "The DOCX is a readable summary of the current run. The CSV files remain the detailed source artifacts for audit and follow-up.", size=9.2, color=MUTED, italic=True)
+
+    properties = doc.core_properties
+    properties.title = "TSYS_PAX_BATCH_REPORT Summary"
+    properties.subject = "Summary of current TSYS/PAX batch report CSV outputs"
+    properties.author = "ASI Spirits"
+    properties.keywords = "TSYS, PAX, batch report, CSV summary, operations"
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    return path
+
+
 def make_client(config):
     base_url = text(config.get("apiBaseUrl")) or BASE_URL
     if base_url.endswith(AUTH_PATH):
@@ -734,10 +1161,29 @@ def main():
     write_csv(email_rows, email_path, EMAIL_KEYS)
     write_csv(review_rows, review_path, REVIEW_KEYS)
     write_csv(detail_rows, detail_path, DETAIL_KEYS)
-    write_raw_batch_history(accepted_batch_records, output_directory / "batch_history.csv")
-    write_term_history(accepted_batch_records, output_directory / "termid_account_history.csv")
+    batch_history_path = output_directory / "batch_history.csv"
+    term_history_path = output_directory / "termid_account_history.csv"
+    write_raw_batch_history(accepted_batch_records, batch_history_path)
+    write_term_history(accepted_batch_records, term_history_path)
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
+
+    summary_path = output_directory / f"tsys_batch_report_summary_{batch_days}_days.docx"
+    write_summary_docx(
+        summary_path,
+        batch_days,
+        auth_window,
+        report_start,
+        report_end,
+        [
+            ("Primary exception report", email_path, "Stores that met the primary report criteria."),
+            ("Store review", review_path, "Rows excluded from the primary report for review."),
+            ("Authorization detail", detail_path, "Approved authorization detail for candidate stores."),
+            ("Accepted batch history", batch_history_path, "Accepted batch records used by this run."),
+            ("Term/account history", term_history_path, "AccountNumber and termID pairs from accepted batch records."),
+            ("Raw batch export", raw_path, "Optional unfiltered batch export when requested."),
+        ],
+    )
 
     print(f"{len(email_rows)} store(s) would be included in the email export.")
     print(f"{len(detail_rows)} authorization terminal detail row(s) were written.")
@@ -745,8 +1191,9 @@ def main():
     print(f"Wrote {email_path}")
     print(f"Wrote {review_path}")
     print(f"Wrote {detail_path}")
-    print(f"Wrote {output_directory / 'batch_history.csv'}")
-    print(f"Wrote {output_directory / 'termid_account_history.csv'}")
+    print(f"Wrote {batch_history_path}")
+    print(f"Wrote {term_history_path}")
+    print(f"Wrote {summary_path}")
     if raw_path:
         print(f"Wrote {raw_path}")
     return 0

@@ -820,25 +820,25 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     section = doc.sections[0]
     section.page_width = Inches(8.5)
     section.page_height = Inches(11)
-    section.top_margin = Inches(1)
-    section.bottom_margin = Inches(1)
-    section.left_margin = Inches(1)
-    section.right_margin = Inches(1)
-    section.header_distance = Inches(0.492)
-    section.footer_distance = Inches(0.492)
+    section.top_margin = Inches(0.62)
+    section.bottom_margin = Inches(0.58)
+    section.left_margin = Inches(0.68)
+    section.right_margin = Inches(0.68)
+    section.header_distance = Inches(0.28)
+    section.footer_distance = Inches(0.28)
 
     normal = doc.styles["Normal"]
     normal.font.name = "Calibri"
     normal._element.rPr.rFonts.set(qn("w:ascii"), "Calibri")
     normal._element.rPr.rFonts.set(qn("w:hAnsi"), "Calibri")
-    normal.font.size = Pt(10.5)
+    normal.font.size = Pt(9)
     normal.font.color.rgb = RGBColor.from_string(INK)
-    normal.paragraph_format.space_after = Pt(6)
-    normal.paragraph_format.line_spacing = 1.25
+    normal.paragraph_format.space_after = Pt(3)
+    normal.paragraph_format.line_spacing = 1.05
     for style_name, size, color, before, after in (
-        ("Heading 1", 16, BLUE, 18, 10),
-        ("Heading 2", 13, BLUE, 14, 7),
-        ("Heading 3", 12, DARK_BLUE, 10, 5),
+        ("Heading 1", 11.5, BLUE, 6, 3),
+        ("Heading 2", 10.5, BLUE, 5, 2),
+        ("Heading 3", 10, DARK_BLUE, 4, 2),
     ):
         style = doc.styles[style_name]
         style.font.name = "Calibri"
@@ -854,24 +854,28 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     header = section.header.paragraphs[0]
     header.paragraph_format.space_after = Pt(3)
     header_run = header.add_run("TSYS_PAX_BATCH_REPORT | Run Summary")
-    set_font(header_run, size=8.5, color=MUTED, bold=True)
+    set_font(header_run, size=7.5, color=MUTED, bold=True)
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     footer_run = footer.add_run("ASI Spirits | ")
-    set_font(footer_run, size=8.5, color=MUTED)
+    set_font(footer_run, size=7.5, color=MUTED)
     add_page_field(footer)
 
     title = doc.add_paragraph()
-    title.paragraph_format.space_after = Pt(4)
+    title.paragraph_format.space_after = Pt(1)
     title_run = title.add_run("TSYS_PAX_BATCH_REPORT")
-    set_font(title_run, size=25, color=NAVY, bold=True)
+    set_font(title_run, size=18, color=NAVY, bold=True)
     subtitle = doc.add_paragraph()
-    subtitle.paragraph_format.space_after = Pt(12)
-    subtitle_run = subtitle.add_run("Generated summary of the current CSV outputs")
-    set_font(subtitle_run, size=13.5, color=MUTED)
-    add_para(doc, f"Generated: {datetime.now():%Y-%m-%d %H:%M}", size=9.5, color=MUTED, after=2)
-    add_para(doc, f"Batch window: {report_start:%Y-%m-%d} through {report_end:%Y-%m-%d}", size=9.5, color=MUTED, after=2)
-    add_para(doc, f"Authorization window: {auth_window}", size=9.5, color=MUTED, after=10)
+    subtitle.paragraph_format.space_after = Pt(4)
+    subtitle_run = subtitle.add_run("Run summary")
+    set_font(subtitle_run, size=10.5, color=MUTED)
+    add_para(
+        doc,
+        f"Generated {datetime.now():%Y-%m-%d %H:%M} | Batch window {report_start:%Y-%m-%d} to {report_end:%Y-%m-%d} | Authorization {auth_window}",
+        size=8.5,
+        color=MUTED,
+        after=5,
+    )
 
     if primary_rows:
         add_note(
@@ -890,39 +894,34 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
             label_color=NAVY,
         )
 
-    add_heading(doc, "1. Executive summary", 1)
+    add_heading(doc, "Key results", 1)
     add_table(
         doc,
         ["Measure", "Result"],
         [
-            ("Stores in primary exception report", f"{len(primary_rows):,}"),
+            ("Stores flagged", f"{len(primary_rows):,}"),
             ("Approved authorization exposure", f"${primary_total:,.2f}"),
-            ("Authorization detail rows", f"{len(detail_rows):,}"),
-            ("Review rows excluded from primary report", f"{len(review_rows):,}"),
-            ("Accepted batch records in window", f"{len(accepted_batch_rows):,}"),
-            ("Rejected raw batch records", f"{rejected_raw:,}" if raw_batch_rows else "Raw export not requested"),
-            ("Accepted batch sales total", f"${batch_sales_total:,.2f}"),
-            ("Accepted batch net total", f"${batch_net_total:,.2f}"),
-            ("Account + termID pairs in accepted history", f"{len(term_rows):,}"),
-            ("termID values reused across accounts", f"{len(ambiguous_terms):,}"),
+            ("Authorization detail", f"{len(detail_rows):,} row(s) / ${detail_total:,.2f}"),
+            ("Review rows excluded", f"{len(review_rows):,}"),
+            ("Accepted batches used", f"{len(accepted_batch_rows):,}"),
+            ("Rejected raw batches", f"{rejected_raw:,}" if raw_batch_rows else "Not requested"),
+            ("Reused termIDs", f"{len(ambiguous_terms):,}"),
         ],
-        [4600, 4760],
+        [5200, 4160],
     )
 
-    add_heading(doc, "2. Important findings", 1)
-    findings = [
-        ("Primary exception count", f"{len(primary_rows):,} store(s) are in the primary CSV."),
-        ("Authorization exposure", f"${primary_total:,.2f} total approved authorization amount is associated with those store accounts."),
-        ("Terminal interpretation", "The primary TERMID field is intentionally blank; terminal-level authorization detail is supporting evidence only."),
-        ("Review exclusions", f"{len(review_rows):,} row(s) were excluded from the primary CSV because store display data was missing or conflicting."),
-        ("Batch evidence", f"{len(accepted_batch_rows):,} accepted batch record(s) were used to exclude accounts that batched in the selected window."),
-        ("Term/account reuse", f"{len(ambiguous_terms):,} termID value(s) appeared under multiple account numbers in the accepted batch history."),
-    ]
-    add_table(doc, ["Finding", "Interpretation"], findings, [3000, 6360])
+    add_heading(doc, "Important interpretation", 1)
+    interpretation = "The primary report is store/account level. TERMID is intentionally blank; terminalNumber in the detail CSV is supporting authorization activity, not proof of the exact terminal that failed to batch."
+    if review_rows:
+        reason_text = ", ".join(f"{reason}: {count}" for reason, count in reason_counts.most_common(4))
+        interpretation += f" Review exclusions by reason: {reason_text}."
+    if ambiguous_terms:
+        interpretation += f" {len(ambiguous_terms):,} termID value(s) appeared under multiple account numbers in accepted batch history."
+    add_para(doc, interpretation, size=8.8, after=4)
 
-    add_heading(doc, "3. Stores requiring review", 1)
+    add_heading(doc, "Top flagged stores", 1)
     if primary_rows:
-        top_primary = sorted(primary_rows, key=lambda row: parse_amount(row.get("AMOUNT")), reverse=True)[:50]
+        top_primary = sorted(primary_rows, key=lambda row: parse_amount(row.get("AMOUNT")), reverse=True)[:5]
         add_table(
             doc,
             ["Store", "Device", "Approved amount"],
@@ -934,78 +933,26 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
                 )
                 for row in top_primary
             ],
-            [5600, 1500, 2260],
+            [5200, 2600, 1960],
         )
         if len(primary_rows) > len(top_primary):
-            add_para(doc, f"The table shows the top {len(top_primary)} stores by approved amount. The complete list is in the primary CSV.", size=9.2, color=MUTED, italic=True)
+            add_para(doc, f"Showing the top {len(top_primary)} by approved amount; the complete list is in the primary CSV.", size=8.2, color=MUTED, italic=True, after=3)
     else:
-        add_para(doc, "No primary exception rows were generated.")
+        add_para(doc, "No primary exception rows were generated.", size=8.8, after=4)
 
-    add_heading(doc, "4. Authorization detail", 1)
-    if detail_rows:
-        top_detail = sorted(detail_rows, key=lambda row: parse_amount(row.get("approvedAmount")), reverse=True)[:50]
-        add_para(doc, f"The detail CSV contains {len(detail_rows):,} terminal-level authorization row(s), totaling ${detail_total:,.2f} in approved authorization activity.")
-        add_table(
-            doc,
-            ["Store", "Terminal number", "Approved amount", "Count"],
-            [
-                (
-                    text(row.get("STORENAME")) or "(unnamed store)",
-                    text(row.get("terminalNumber")),
-                    f"${parse_amount(row.get('approvedAmount')):,.2f}",
-                    text(row.get("approvedCount")),
-                )
-                for row in top_detail
-            ],
-            [4000, 1800, 2100, 1460],
-        )
-        if len(detail_rows) > len(top_detail):
-            add_para(doc, f"The table shows the top {len(top_detail)} authorization detail rows by approved amount. The complete detail is in in_use_not_batched_detail.csv.", size=9.2, color=MUTED, italic=True)
-    else:
-        add_para(doc, "No authorization detail rows were generated.")
-
-    add_heading(doc, "5. Review and excluded rows", 1)
-    if review_rows:
-        reason_rows = [(reason, count) for reason, count in reason_counts.most_common()]
-        add_table(doc, ["Review reason", "Rows"], reason_rows, [7000, 2360])
-        review_sample = review_rows[:50]
-        add_table(
-            doc,
-            ["Reason", "Store", "Account", "Details"],
-            [
-                (
-                    text(row.get("reason")),
-                    text(row.get("STORENAME")),
-                    text(row.get("accountNumber")),
-                    text(row.get("details")),
-                )
-                for row in review_sample
-            ],
-            [2450, 2450, 1800, 2660],
-        )
-        if len(review_rows) > len(review_sample):
-            add_para(doc, f"The table shows the first {len(review_sample)} review rows. The complete list is in needs_mapping_or_review.csv.", size=9.2, color=MUTED, italic=True)
-    else:
-        add_note(doc, "Review status.", "No rows were excluded to needs_mapping_or_review.csv.", fill=LIGHT_GRAY, label_color=NAVY)
-
-    add_heading(doc, "6. Batch and term/account history", 1)
-    add_para(doc, f"The accepted batch history contains {len(accepted_batch_rows):,} row(s). These records are the batch evidence used to exclude accounts from the primary exception list.")
-    if ambiguous_terms:
-        add_note(doc, "TermID reuse finding.", f"{len(ambiguous_terms):,} termID value(s) were associated with more than one account number in the accepted batch history. This is historical review information and is not used to claim a physical device identity.", fill=RED_FILL, label_color=RED)
-        add_table(doc, ["termID", "Accounts observed"], ambiguous_terms[:50], [2200, 7160])
-        if len(ambiguous_terms) > 50:
-            add_para(doc, "Only the first 50 reused termID values are shown; see termid_account_history.csv for the full account/term history.", size=9.2, color=MUTED, italic=True)
-    else:
-        add_note(doc, "TermID reuse finding.", "No termID values were associated with multiple account numbers in the accepted batch history for this run.", fill=LIGHT_GRAY, label_color=NAVY)
-
-    add_heading(doc, "7. CSV inventory", 1)
-    add_table(
-        doc,
-        ["CSV output", "Rows", "Purpose"],
-        [(label, f"{len(rows):,}", description) for label, _, description, rows in csv_data],
-        [2800, 1000, 5560],
+    add_heading(doc, "Output files", 1)
+    file_list = "; ".join(
+        f"{path_value.name} ({len(rows):,} rows)"
+        for _, path_value, _, rows in csv_data
     )
-    add_para(doc, "The DOCX is a readable summary of the current run. The CSV files remain the detailed source artifacts for audit and follow-up.", size=9.2, color=MUTED, italic=True)
+    add_para(
+        doc,
+        f"All outputs are saved together in the timestamped run folder: {file_list}. The CSV files remain the detailed source artifacts for audit and follow-up.",
+        size=7.8,
+        color=MUTED,
+        italic=True,
+        after=0,
+    )
 
     properties = doc.core_properties
     properties.title = "TSYS_PAX_BATCH_REPORT Summary"

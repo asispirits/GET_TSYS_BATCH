@@ -740,6 +740,7 @@ def build_user_guide():
         [2850, 6510],
     )
     add_body(doc, "The primary CSV columns are STORENAME, AMOUNT, accountNumber, terminalNumber, approvedAmount, approvedCount, and lastBatchDate. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail for the terminalNumber row. lastBatchDate is the latest accepted batch timestamp found in the configured historical lookback and uses MM/DD/YYYY HH:MM:SS AM/PM. These values are not batch totals or proof of a specific terminal failure.")
+    add_body(doc, "The review CSV uses the same seven columns followed by reason and details. It is intentionally limited to the information needed to understand why a row was excluded from the primary report.")
     add_body(doc, "Each report run creates a new timestamped subfolder under the configured output folder using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If two runs occur in the same second, the later folder receives a suffix such as _01, so prior outputs are not overwritten.")
 
     add_heading(doc, "6. Optional display overrides", 1)

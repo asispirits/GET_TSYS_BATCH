@@ -52,16 +52,7 @@ EMAIL_KEYS = [
     "approvedCount",
     "lastBatchDate",
 ]
-REVIEW_KEYS = [
-    "reason",
-    "URL",
-    "STORENAME",
-    "DEVICE",
-    "accountNumber",
-    "termID",
-    "terminalNumber",
-    "details",
-]
+REVIEW_KEYS = EMAIL_KEYS + ["reason", "details"]
 RAW_BATCH_KEYS = [
     "created", "rejected", "batchNumber", "accountNumber", "termID",
     "salesAmount", "salesCount", "refundAmount", "refundCount", "netAmount",
@@ -491,54 +482,51 @@ def create_store_report(
 
     email_rows = []
     review_rows = []
+
+    def review_row(reason, details, **values):
+        row = {key: "" for key in EMAIL_KEYS}
+        row.update(values)
+        row["reason"] = reason
+        row["details"] = details
+        return row
+
     for account in sorted(auth_by_account):
         if account in batched_accounts:
             continue
         merchant = roster.get(account)
         if merchant is None:
             review_rows.append(
-                {
-                    "reason": "ACCOUNT_NOT_FOUND_IN_ACTIVE_TSYS_ROSTER",
-                    "URL": "",
-                    "STORENAME": "",
-                    "DEVICE": "PAX",
-                    "accountNumber": account,
-                    "termID": "",
-                    "terminalNumber": "",
-                    "details": "",
-                }
+                review_row(
+                    "ACCOUNT_NOT_FOUND_IN_ACTIVE_TSYS_ROSTER",
+                    "",
+                    accountNumber=account,
+                    lastBatchDate=last_batch_by_account.get(account, ""),
+                )
             )
             continue
 
         override = overrides.get(account, {})
         if account in override_conflicts:
             review_rows.append(
-                {
-                    "reason": "CONFLICTING_STORE_DISPLAY_OVERRIDES",
-                    "URL": "",
-                    "STORENAME": merchant["storeName"],
-                    "DEVICE": "PAX",
-                    "accountNumber": account,
-                    "termID": "",
-                    "terminalNumber": "",
-                    "details": "More than one configured display row exists for this account.",
-                }
+                review_row(
+                    "CONFLICTING_STORE_DISPLAY_OVERRIDES",
+                    "More than one configured display row exists for this account.",
+                    STORENAME=merchant["storeName"],
+                    accountNumber=account,
+                    lastBatchDate=last_batch_by_account.get(account, ""),
+                )
             )
             continue
 
         store_name = override.get("STORENAME") or merchant["storeName"]
         if not store_name:
             review_rows.append(
-                {
-                    "reason": "MISSING_STORE_NAME",
-                    "URL": override.get("URL", ""),
-                    "STORENAME": "",
-                    "DEVICE": override.get("DEVICE", "PAX"),
-                    "accountNumber": account,
-                    "termID": "",
-                    "terminalNumber": "",
-                    "details": "Active TSYS account has no location name.",
-                }
+                review_row(
+                    "MISSING_STORE_NAME",
+                    "Active TSYS account has no location name.",
+                    accountNumber=account,
+                    lastBatchDate=last_batch_by_account.get(account, ""),
+                )
             )
             continue
 

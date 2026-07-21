@@ -6,5 +6,11 @@
   "authorizationWindow": "last_24_h",
   "requireAuthorizationActivity": true,
   "outputDirectory": "./tsys-auditdata",
+  "slack": {
+    "enabled": false,
+    "sendWhenEmpty": false,
+    "webhookEnvironmentVariable": "SLACK_BATCH_REPORT_WEBHOOK",
+    "maxRowsInMessage": 25
+  },
   "devices": []
 }

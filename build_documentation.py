@@ -556,7 +556,7 @@ def build_technical_manual():
         ],
         [2500, 1850, 5110],
     )
-    add_body(doc, "Optional devices rows may contain enabled, url, storeName, device, and accountNumber. An enabled row with an accountNumber can override URL, store name, and device text for display. Rows without accountNumber are ignored by the report logic. Conflicting enabled rows for the same account are sent to needs_mapping_or_review.csv and excluded from the primary CSV.")
+    add_body(doc, "Optional devices rows in config.json may contain enabled, url, storeName, device, and accountNumber. An enabled row with an accountNumber can override URL, store name, and device text for display. Rows without accountNumber are ignored by the report logic. Conflicting enabled rows for the same account are sent to needs_mapping_or_review.csv and excluded from the primary CSV. The minimal UI preserves these rows but does not display a device table; edit them directly in config.json when needed.")
 
     add_heading(doc, "8. UI operation", 1)
     num = add_bullet_numbering(doc, "decimal", left=540, hanging=270)
@@ -740,7 +740,7 @@ def build_user_guide():
     add_body(doc, "Each report run creates a new timestamped subfolder under the configured output folder using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If two runs occur in the same second, the later folder receives a suffix such as _01, so prior outputs are not overwritten.")
 
     add_heading(doc, "6. Optional display overrides", 1)
-    add_body(doc, "The UI can maintain optional rows for URL, Store Name, Device, and Account Number. These values are for display only. Account Number is the TSYS merchant account used to associate a display override with the active roster.")
+    add_body(doc, "Optional display rows for URL, Store Name, Device, and Account Number can be maintained directly in config.json. These values are for display only. Account Number is the TSYS merchant account used to associate a display override with the active roster. The minimal UI does not show the optional device table.")
     add_body(doc, "If there are two enabled rows for the same account with different values, the account is excluded from the primary CSV and placed in needs_mapping_or_review.csv. This prevents a conflicting manual label from reaching the report.")
 
     add_heading(doc, "7. Scheduled operation", 1)

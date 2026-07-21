@@ -1529,47 +1529,8 @@ class BatchReportUi(tk.Tk):
     def build_controls(self):
         shell = tk.Frame(self, bg="#f4f5f6")
         shell.pack(fill="both", expand=True)
-
-        sidebar = tk.Frame(shell, width=190, bg="#203239")
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-        tk.Label(
-            sidebar,
-            text="REPORTING",
-            bg="#203239",
-            fg="#9fb0b7",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            padx=18,
-            pady=18,
-        ).pack(fill="x")
-        for label, active in (
-            ("Dashboard", False),
-            ("TSYS Batch Report", True),
-            ("Historical Data", False),
-        ):
-            tk.Label(
-                sidebar,
-                text=label,
-                bg="#3d8fca" if active else "#203239",
-                fg="#ffffff" if active else "#c8d1d5",
-                font=("Segoe UI", 10, "bold" if active else "normal"),
-                anchor="w",
-                padx=18,
-                pady=11,
-            ).pack(fill="x", pady=(0, 1))
-        tk.Label(
-            sidebar,
-            text="Bottle POS",
-            bg="#203239",
-            fg="#9fb0b7",
-            font=("Segoe UI", 9),
-            anchor="w",
-            padx=18,
-        ).pack(side="bottom", fill="x", pady=18)
-
         content = tk.Frame(shell, bg="#f4f5f6")
-        content.pack(side="left", fill="both", expand=True)
+        content.pack(fill="both", expand=True)
         header = tk.Frame(content, height=66, bg="#ffffff", highlightthickness=1, highlightbackground="#e1e4e6")
         header.pack(fill="x")
         header.pack_propagate(False)
@@ -1642,25 +1603,9 @@ class BatchReportUi(tk.Tk):
         ttk.Button(actions, text="Run report", command=self.run_report).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Refresh historical data", command=self.refresh_historical).pack(side="left")
 
-        table_frame = ttk.Frame(outer)
-        table_frame.pack(fill="both", expand=True)
-        table_frame.rowconfigure(0, weight=1)
-        table_frame.columnconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table_frame, columns=[item[0] for item in UI_COLUMNS], show="headings", selectmode="extended")
-        for key, heading, width in UI_COLUMNS:
-            self.tree.heading(key, text=heading)
-            self.tree.column(key, width=width, minwidth=60, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        y_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        x_scroll.grid(row=1, column=0, sticky="ew")
-        self.tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-        self.tree.bind("<Double-1>", self.begin_cell_edit)
-
         self.log_box = tk.Text(
             outer,
-            height=6,
+            height=12,
             bg="#f6f8fa",
             fg="#1f2328",
             insertbackground="#0969da",
@@ -1673,7 +1618,7 @@ class BatchReportUi(tk.Tk):
             highlightcolor="#0969da",
             wrap="word",
         )
-        self.log_box.pack(fill="x", pady=(10, 0))
+        self.log_box.pack(fill="both", expand=True, pady=(16, 0))
 
     def log(self, message):
         self.log_box.insert("end", f"[{datetime.now():%H:%M:%S}] {message}\n")
@@ -1726,10 +1671,9 @@ class BatchReportUi(tk.Tk):
         return text(device.get(key))
 
     def refresh_table(self):
-        self.tree.delete(*self.tree.get_children())
-        for index, device in enumerate(self.devices):
-            values = [self.display_value(device, key) for key, _, _ in UI_COLUMNS]
-            self.tree.insert("", "end", iid=str(index), values=values)
+        # The setup UI no longer renders the optional device override table.
+        # The loaded device rows are preserved and saved back to config.json.
+        return
 
     def begin_cell_edit(self, event):
         row_id = self.tree.identify_row(event.y)

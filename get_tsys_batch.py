@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import tkinter as tk
+import webbrowser
 from collections import Counter, defaultdict
 from argparse import ArgumentParser
 from datetime import datetime, time, timedelta
@@ -1891,6 +1892,8 @@ class BatchReportUi(tk.Tk):
         self.loaded_config_path = None
         self.process = None
         self.edit_control = None
+        self.active_command = None
+        self.last_output_directory = None
 
         self.configure_styles()
         self.build_controls()
@@ -2206,6 +2209,8 @@ class BatchReportUi(tk.Tk):
         config_path = self.save_config_from_ui()
         if config_path is None:
             return
+        self.active_command = command[0] if command else None
+        self.last_output_directory = None
         log_path = Path(tempfile.gettempdir()) / (
             f"TSYS_PAX_BATCH_REPORT_{os.getpid()}_{datetime.now():%Y%m%d%H%M%S%f}.log"
         )
@@ -2228,6 +2233,7 @@ class BatchReportUi(tk.Tk):
                 daemon=True,
             ).start()
         except Exception as error:
+            self.active_command = None
             self.log(f"ERROR: {error}")
 
     def read_process_output(self, process, log_path):
@@ -2242,7 +2248,7 @@ class BatchReportUi(tk.Tk):
                 lines = log_file.readlines()
                 position = log_file.tell()
             for line in lines:
-                self.after(0, self.log, line.rstrip())
+                self.after(0, self.handle_process_line, line.rstrip())
 
         while process.poll() is None:
             read_new_lines()
@@ -2258,6 +2264,93 @@ class BatchReportUi(tk.Tk):
     def report_finished(self, exit_code):
         self.log("Finished." if exit_code == 0 else f"ERROR: report exited with code {exit_code}.")
         self.process = None
+        if exit_code == 0 and self.active_command == "--run-report":
+            if self.last_output_directory is None:
+                self.log("ERROR: Report completed, but the output directory was not reported.")
+            else:
+                self.show_completion_popup(
+                    self.last_output_directory / "BottlePOS PAX Batch Report.html"
+                )
+        self.active_command = None
+
+    def handle_process_line(self, line):
+        self.log(line)
+        if line.startswith("Output directory:"):
+            self.last_output_directory = Path(line.partition(":")[2].strip())
+
+    def show_completion_popup(self, report_path):
+        popup = tk.Toplevel(self)
+        popup.title("Report complete")
+        popup.configure(bg="#ffffff")
+        popup.resizable(False, False)
+        popup.transient(self)
+        popup.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        body = tk.Frame(popup, bg="#ffffff", padx=24, pady=20)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body,
+            text="Report generation complete",
+            bg="#ffffff",
+            fg="#203239",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            text="The interactive HTML report is ready to view.",
+            bg="#ffffff",
+            fg="#7a8790",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(5, 16))
+
+        buttons = tk.Frame(body, bg="#ffffff")
+        buttons.pack(fill="x")
+
+        def view_report():
+            if not report_path.exists():
+                self.log(f"ERROR: Report file was not found: {report_path}")
+                return
+            try:
+                webbrowser.open(report_path.resolve().as_uri())
+                popup.destroy()
+            except OSError as error:
+                self.log(f"ERROR: Could not open report: {error}")
+
+        tk.Button(
+            buttons,
+            text="VIEW REPORT",
+            command=view_report,
+            bg="#0969da",
+            fg="#ffffff",
+            activebackground="#0550ae",
+            activeforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=14,
+            pady=8,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            buttons,
+            text="CLOSE",
+            command=self.destroy,
+            bg="#f6f8fa",
+            fg="#1f2328",
+            activebackground="#ddf4ff",
+            activeforeground="#1f2328",
+            relief="flat",
+            borderwidth=1,
+            padx=14,
+            pady=8,
+            cursor="hand2",
+        ).pack(side="left")
+
+        popup.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - popup.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - popup.winfo_height()) // 2)
+        popup.geometry(f"+{x}+{y}")
+        popup.grab_set()
+        popup.focus_set()
 
     def run_report(self):
         self.start_command(["--run-report"])

@@ -1240,6 +1240,369 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
     return path
 
 
+def write_interactive_summary_html(path, batch_days, auth_window, report_start, report_end, csv_specs):
+    csv_data = []
+    for label, csv_path, description in csv_specs:
+        if csv_path:
+            path_value = Path(csv_path)
+            csv_data.append((label, path_value, description, read_csv_rows(path_value)))
+
+    data_by_label = {label: rows for label, _, _, rows in csv_data}
+    path_by_label = {label: path_value for label, path_value, _, _ in csv_data}
+    primary_rows = data_by_label.get("Primary exception report", [])
+    review_rows = data_by_label.get("Store review", [])
+    accepted_batch_rows = data_by_label.get("Accepted batch history", [])
+    raw_batch_rows = data_by_label.get("Raw batch export", [])
+
+    unique_primary_rows = []
+    seen_accounts = set()
+    for row in primary_rows:
+        key = text(row.get("accountNumber")) or "|".join(
+            [text(row.get("STORENAME")), text(row.get("DEVICE"))]
+        )
+        if key in seen_accounts:
+            continue
+        seen_accounts.add(key)
+        unique_primary_rows.append(row)
+
+    detail_rows = [
+        row for row in primary_rows
+        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+    ]
+    primary_total = sum(parse_amount(row.get("AMOUNT")) for row in unique_primary_rows)
+    detail_total = sum(parse_amount(row.get("approvedAmount")) for row in detail_rows)
+    reason_counts = Counter(text(row.get("reason")) or "UNSPECIFIED" for row in review_rows)
+    term_accounts = defaultdict(set)
+    for row in accepted_batch_rows:
+        term = text(row.get("termID"))
+        account = text(row.get("accountNumber"))
+        if term and account:
+            term_accounts[term].add(account)
+    ambiguous_terms = [
+        (term, ", ".join(sorted(accounts)))
+        for term, accounts in sorted(term_accounts.items())
+        if len(accounts) > 1
+    ]
+
+    def columns_for(rows, fallback):
+        return list(rows[0].keys()) if rows else list(fallback)
+
+    datasets = {
+        "primary": {
+            "label": "PINPAD BATCH NOT CLOSED",
+            "filename": path_by_label.get("Primary exception report", Path("pinpad_batch_not_closed.csv")).name,
+            "columns": columns_for(primary_rows, EMAIL_KEYS),
+            "rows": primary_rows,
+        },
+        "review": {
+            "label": "NEEDS MAPPING OR REVIEW",
+            "filename": path_by_label.get("Store review", Path("needs_mapping_or_review.csv")).name,
+            "columns": columns_for(review_rows, REVIEW_KEYS),
+            "rows": review_rows,
+        },
+        "term_history": {
+            "label": "TERMID ACCOUNT HISTORY",
+            "filename": path_by_label.get("Term/account history", Path("termid_account_history.csv")).name,
+            "columns": columns_for( data_by_label.get("Term/account history", []), ["accountNumber", "termID", "lastBatchDate"]),
+            "rows": data_by_label.get("Term/account history", []),
+        },
+        "batch_history": {
+            "label": "BATCH HISTORY",
+            "filename": path_by_label.get("Accepted batch history", Path("batch_history.csv")).name,
+            "columns": columns_for(accepted_batch_rows, RAW_BATCH_KEYS),
+            "rows": accepted_batch_rows,
+        },
+    }
+    if "Raw batch export" in path_by_label:
+        datasets["raw_batch"] = {
+            "label": "RAW BATCH EXPORT",
+            "filename": path_by_label["Raw batch export"].name,
+            "columns": columns_for(raw_batch_rows, RAW_BATCH_KEYS),
+            "rows": raw_batch_rows,
+        }
+
+    finding = (
+        f"{len(unique_primary_rows):,} store(s) met the report criteria, representing "
+        f"${primary_total:,.2f} in approved authorization exposure. The report is store/account level; "
+        "it does not prove which physical terminal failed to batch."
+        if unique_primary_rows
+        else "No stores met the report criteria for this run. No active TSYS account had both approved authorization activity and no accepted batch in the selected window."
+    )
+    reason_text = ", ".join(
+        f"{reason}: {count:,}" for reason, count in reason_counts.most_common(4)
+    ) or "None"
+    ambiguous_text = (
+        f"{len(ambiguous_terms):,} termID value(s) appeared under multiple account numbers in accepted batch history."
+        if ambiguous_terms else "No reused termID values were found in the accepted batch history."
+    )
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    logo_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    logo_path = logo_root / "bottlepos_logo.png"
+    logo_html = ""
+    if logo_path.exists():
+        logo_data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        logo_html = f'<img class="logo" src="data:image/png;base64,{logo_data}" alt="Bottle POS">'
+
+    report_data_json = json.dumps(datasets, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    report_meta_json = json.dumps(
+        {
+            "generated": generated,
+            "batchStart": report_start.strftime("%Y-%m-%d"),
+            "batchEnd": report_end.strftime("%Y-%m-%d"),
+            "authWindow": auth_window,
+            "finding": finding,
+            "primaryStoreCount": len(unique_primary_rows),
+            "primaryRowCount": len(primary_rows),
+            "primaryTotal": primary_total,
+            "detailRowCount": len(detail_rows),
+            "detailTotal": detail_total,
+            "acceptedBatchCount": len(accepted_batch_rows),
+            "reviewCount": len(review_rows),
+            "reasonText": reason_text,
+            "ambiguousText": ambiguous_text,
+        },
+        ensure_ascii=False,
+    ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+    html_document = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BottlePOS PAX Batch Report</title>
+  <style>
+    :root {
+      --navy: #203239;
+      --blue: #3d8fca;
+      --blue-light: #d9edf7;
+      --green: #8bbd35;
+      --yellow: #f1b735;
+      --red: #df6268;
+      --ink: #30383d;
+      --muted: #7a8790;
+      --border: #d9dde0;
+      --surface: #ffffff;
+      --canvas: #f4f5f6;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
+    .topbar { position: relative; height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 30px; background: var(--surface); border-bottom: 1px solid var(--border); }
+    .logo { width: 170px; height: auto; display: block; }
+    .brand { position: absolute; left: 50%; transform: translateX(-50%); font-size: 20px; font-weight: 700; color: var(--navy); letter-spacing: .2px; white-space: nowrap; }
+    .run-meta { margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; }
+    .main { width: 100%; max-width: 1440px; margin: 0 auto; padding: 26px 32px 38px; }
+    .page-title { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+    h1 { margin: 0; font-size: 27px; color: var(--navy); }
+    h2 { margin: 26px 0 11px; font-size: 18px; color: var(--navy); }
+    .subtitle { color: var(--muted); font-size: 13px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 22px; border-bottom: 1px solid var(--border); }
+    .tab { border: 1px solid var(--border); border-bottom: 0; border-radius: 5px 5px 0 0; padding: 10px 14px; background: #e9eef1; color: var(--navy); font-weight: 700; cursor: pointer; }
+    .tab:hover { background: #d9edf7; }
+    .tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .panel { background: var(--surface); border: 1px solid var(--border); }
+    .panel-title { padding: 11px 14px; background: linear-gradient(#fff, #f1f1f1); border-bottom: 1px solid var(--border); font-weight: 700; color: var(--navy); }
+    .finding { margin-top: 22px; padding: 17px 20px; background: #fff8df; border: 1px solid #efdaa0; border-left: 5px solid var(--yellow); line-height: 1.5; }
+    .finding strong { color: #9a6b00; }
+    .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .card { background: var(--surface); border: 1px solid var(--border); padding: 15px 16px; min-height: 92px; }
+    .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+    .card .value { margin-top: 9px; color: var(--blue); font-size: 23px; font-weight: 700; }
+    .card.green .value { color: var(--green); }
+    .card.yellow .value { color: var(--yellow); }
+    .card.red .value { color: var(--red); }
+    .two-col { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 18px; align-items: start; }
+    .note { padding: 14px 16px; background: #f8fafb; border: 1px solid var(--border); color: var(--muted); line-height: 1.5; font-size: 13px; }
+    .toolbar { display: flex; align-items: center; gap: 12px; margin: 18px 0 10px; }
+    .search { flex: 1; min-width: 220px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; }
+    .row-count { color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .table-wrap { max-height: calc(100vh - 260px); overflow: auto; background: var(--surface); border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { position: sticky; top: 0; z-index: 1; padding: 10px 12px; text-align: left; background: var(--blue-light); color: var(--navy); border-bottom: 1px solid #bdd7e7; cursor: pointer; white-space: nowrap; }
+    th:hover { background: #c5e3f0; }
+    td { padding: 9px 12px; border-bottom: 1px solid #e7e9ea; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: #f8fafb; }
+    .amount { text-align: right; font-weight: 700; color: var(--green); }
+    .empty { color: var(--muted); text-align: center; padding: 18px; }
+    footer { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: right; }
+    @media (max-width: 900px) { .brand { position: static; transform: none; flex: 1; text-align: center; } .main { padding: 20px; } .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
+    @media print { body { background: #fff; } .main { max-width: none; padding: 0; } .topbar { padding: 0 0 14px; } .tabs, .toolbar { display: none; } .table-wrap { max-height: none; overflow: visible; } .panel, .card { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">__LOGO__<div class="brand">PAX BATCH REPORT</div><div class="run-meta">Interactive report<br>Generated __GENERATED__</div></header>
+  <main class="main">
+    <div class="page-title"><h1>BottlePOS PAX Batch Report</h1><span class="subtitle">Bottle POS</span></div>
+    <div class="subtitle">Batch window: __BATCH_START__ to __BATCH_END__ &nbsp;|&nbsp; Authorization: __AUTH_WINDOW__</div>
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Report sections"></nav>
+    <div id="content"></div>
+    <footer>Bottle POS</footer>
+  </main>
+  <script>
+    const REPORT_DATA = __REPORT_DATA__;
+    const REPORT_META = __REPORT_META__;
+    const TAB_DEFINITIONS = [
+      { id: "summary", label: "Summary" },
+      { id: "primary", label: "PINPAD BATCH NOT CLOSED" },
+      { id: "review", label: "NEEDS MAPPING OR REVIEW" },
+      { id: "term_history", label: "TERMID ACCOUNT HISTORY" },
+      { id: "batch_history", label: "BATCH HISTORY" },
+    ];
+    if (REPORT_DATA.raw_batch) TAB_DEFINITIONS.push({ id: "raw_batch", label: "RAW BATCH EXPORT" });
+
+    const tabsElement = document.getElementById("tabs");
+    const contentElement = document.getElementById("content");
+    const state = {};
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>\"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[character]));
+    }
+
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    function formatMoney(value) {
+      return "$" + Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function renderSummary(panel) {
+      const topRows = [...REPORT_DATA.primary.rows]
+        .sort((left, right) => Number(String(right.approvedAmount || right.AMOUNT || "0").replace(/[$,]/g, "")) - Number(String(left.approvedAmount || left.AMOUNT || "0").replace(/[$,]/g, "")))
+        .slice(0, 5);
+      const topRowsHtml = topRows.length
+        ? topRows.map(row => `<tr><td>${escapeHtml(row.STORENAME || "(unnamed store)")}</td><td>${escapeHtml(row.accountNumber || "-")}</td><td>${escapeHtml(row.lastBatchDate || "No history")}</td><td class="amount">${formatMoney(row.approvedAmount || row.AMOUNT)}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No primary exception rows were generated.</td></tr>`;
+      const filesHtml = TAB_DEFINITIONS.filter(tab => tab.id !== "summary" && REPORT_DATA[tab.id]).map(tab => `<li><span>${escapeHtml(REPORT_DATA[tab.id].filename)}</span><small>${formatNumber(REPORT_DATA[tab.id].rows.length)} row(s)</small></li>`).join("");
+      panel.innerHTML = `
+        <section class="finding"><strong>Primary finding.</strong> ${escapeHtml(REPORT_META.finding)}</section>
+        <h2>Key results</h2>
+        <section class="cards">
+          <div class="card"><div class="label">Stores flagged</div><div class="value">${formatNumber(REPORT_META.primaryStoreCount)}</div></div>
+          <div class="card green"><div class="label">Approved exposure</div><div class="value">${formatMoney(REPORT_META.primaryTotal)}</div></div>
+          <div class="card"><div class="label">Primary rows</div><div class="value">${formatNumber(REPORT_META.primaryRowCount)}</div></div>
+          <div class="card yellow"><div class="label">Accepted batches</div><div class="value">${formatNumber(REPORT_META.acceptedBatchCount)}</div></div>
+          <div class="card red"><div class="label">Review excluded</div><div class="value">${formatNumber(REPORT_META.reviewCount)}</div></div>
+        </section>
+        <div class="two-col">
+          <section><h2>Top flagged stores</h2><div class="panel"><div class="panel-title">Approved authorization detail</div><table><thead><tr><th>Store</th><th>Account</th><th>Last batch</th><th class="amount">Amount</th></tr></thead><tbody>${topRowsHtml}</tbody></table></div></section>
+          <section><h2>Embedded data</h2><div class="panel"><ul class="files">${filesHtml}</ul></div></section>
+        </div>
+        <h2>Important interpretation</h2>
+        <div class="note">The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: ${escapeHtml(REPORT_META.reasonText)}. ${escapeHtml(REPORT_META.ambiguousText)}</div>`;
+    }
+
+    function renderTable(panel, datasetId) {
+      const dataset = REPORT_DATA[datasetId];
+      const currentState = state[datasetId];
+      const search = currentState.search.toLowerCase();
+      const rows = dataset.rows.filter(row => !search || dataset.columns.some(column => String(row[column] ?? "").toLowerCase().includes(search)));
+      if (currentState.sortColumn) {
+        rows.sort((left, right) => {
+          const leftValue = String(left[currentState.sortColumn] ?? "");
+          const rightValue = String(right[currentState.sortColumn] ?? "");
+          const leftNumber = Number(leftValue.replace(/[$,]/g, ""));
+          const rightNumber = Number(rightValue.replace(/[$,]/g, ""));
+          const comparison = Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftValue !== "" && rightValue !== ""
+            ? leftNumber - rightNumber
+            : leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" });
+          return comparison * currentState.sortDirection;
+        });
+      }
+      panel.querySelector(".row-count").textContent = `${formatNumber(rows.length)} of ${formatNumber(dataset.rows.length)} rows`;
+      const body = panel.querySelector("tbody");
+      body.replaceChildren();
+      if (!rows.length) {
+        const emptyRow = document.createElement("tr");
+        const emptyCell = document.createElement("td");
+        emptyCell.colSpan = dataset.columns.length;
+        emptyCell.className = "empty";
+        emptyCell.textContent = "No matching rows.";
+        emptyRow.appendChild(emptyCell);
+        body.appendChild(emptyRow);
+        return;
+      }
+      rows.forEach(row => {
+        const tableRow = document.createElement("tr");
+        dataset.columns.forEach(column => {
+          const cell = document.createElement("td");
+          cell.textContent = row[column] ?? "";
+          tableRow.appendChild(cell);
+        });
+        body.appendChild(tableRow);
+      });
+    }
+
+    function renderDataset(panel, datasetId) {
+      const dataset = REPORT_DATA[datasetId];
+      state[datasetId] = state[datasetId] || { search: "", sortColumn: null, sortDirection: 1 };
+      panel.innerHTML = `<div class="toolbar"><input class="search" type="search" placeholder="Search this tab..."><span class="row-count"></span></div><div class="table-wrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>`;
+      const headerRow = panel.querySelector("thead tr");
+      dataset.columns.forEach(column => {
+        const header = document.createElement("th");
+        header.textContent = column;
+        header.title = "Click to sort";
+        header.addEventListener("click", () => {
+          const currentState = state[datasetId];
+          currentState.sortDirection = currentState.sortColumn === column ? currentState.sortDirection * -1 : 1;
+          currentState.sortColumn = column;
+          renderTable(panel, datasetId);
+        });
+        headerRow.appendChild(header);
+      });
+      const search = panel.querySelector(".search");
+      search.value = state[datasetId].search;
+      search.addEventListener("input", event => {
+        state[datasetId].search = event.target.value;
+        renderTable(panel, datasetId);
+      });
+      renderTable(panel, datasetId);
+    }
+
+    function activateTab(tabId) {
+      document.querySelectorAll(".tab").forEach(button => button.classList.toggle("active", button.dataset.tab === tabId));
+      const panel = document.getElementById(`panel-${tabId}`);
+      document.querySelectorAll(".tab-panel").forEach(section => section.hidden = section !== panel);
+      if (tabId === "summary") renderSummary(panel);
+      else renderDataset(panel, tabId);
+    }
+
+    TAB_DEFINITIONS.forEach((tab, index) => {
+      const button = document.createElement("button");
+      button.className = "tab";
+      button.dataset.tab = tab.id;
+      button.type = "button";
+      button.textContent = tab.label;
+      button.addEventListener("click", () => activateTab(tab.id));
+      tabsElement.appendChild(button);
+      const panel = document.createElement("section");
+      panel.id = `panel-${tab.id}`;
+      panel.className = "tab-panel";
+      panel.hidden = index !== 0;
+      contentElement.appendChild(panel);
+    });
+    activateTab("summary");
+  </script>
+</body>
+</html>
+"""
+    html_document = (
+        html_document
+        .replace("__LOGO__", logo_html)
+        .replace("__GENERATED__", escape(generated))
+        .replace("__BATCH_START__", escape(report_start.strftime("%Y-%m-%d")))
+        .replace("__BATCH_END__", escape(report_end.strftime("%Y-%m-%d")))
+        .replace("__AUTH_WINDOW__", escape(auth_window))
+        .replace("__REPORT_DATA__", report_data_json)
+        .replace("__REPORT_META__", report_meta_json)
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html_document, encoding="utf-8")
+    return path
+
+
 def make_client(config):
     base_url = text(config.get("apiBaseUrl")) or BASE_URL
     if base_url.endswith(AUTH_PATH):
@@ -1459,7 +1822,7 @@ def main():
         write_raw_batch_history(batch_records, raw_path)
 
     summary_path = output_directory / "BottlePOS PAX Batch Report.html"
-    write_summary_html(
+    write_interactive_summary_html(
         summary_path,
         batch_days,
         auth_window,

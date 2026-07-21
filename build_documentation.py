@@ -474,12 +474,12 @@ def build_technical_manual():
             ("batch_history.csv", "Accepted batch records returned for the current report window.", "Audit trail for the batch data used by the run."),
             ("termid_account_history.csv", "Distinct accountNumber + termID pairs and their latest batch date/time in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical reference for termID/account analysis; not used to assert a device identity."),
             ("termid_account_history.xlsx", "Styled Excel companion to termid_account_history.csv with centered headers/data in columns A-B and left-aligned lastBatchDate in column C.", "Use this version when presentation formatting is needed; the CSV remains the data-exchange file."),
-            ("BottlePOS PAX Batch Report.html", "Standalone themed HTML summary of the CSV outputs created by the current run.", "Convenience summary; the CSV files remain the detailed source outputs."),
+            ("BottlePOS PAX Batch Report.html", "Standalone interactive HTML report with embedded data tabs for Summary, PINPAD BATCH NOT CLOSED, NEEDS MAPPING OR REVIEW, TERMID ACCOUNT HISTORY, and BATCH HISTORY.", "Presentation and review copy; the CSV files remain the data-exchange source outputs."),
         ],
         [2050, 3000, 4310],
     )
     add_body(doc, "If a raw batch path is supplied with -tf/--tsys_filename, the utility also writes the unfiltered batch export to that path. The default report run does not create that optional compatibility file.")
-    add_body(doc, "Each normal report run creates a new timestamped subfolder under outputDirectory using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If another run starts in the same second, a numeric suffix such as _01 is added. The CSV files and themed HTML summary for the run are kept together in that folder. Historical refreshes use the same pattern under outputDirectory/historical.")
+    add_body(doc, "Each normal report run creates a new timestamped subfolder under outputDirectory using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If another run starts in the same second, a numeric suffix such as _01 is added. The CSV files, Excel companions, and interactive HTML report for the run are kept together in that folder. Historical refreshes use the same pattern under outputDirectory/historical.")
 
     add_heading(doc, "3. System components", 1)
     add_table(
@@ -735,13 +735,14 @@ def build_user_guide():
             ("batch_history.csv", "Accepted batch records used by the current run."),
             ("termid_account_history.csv", "Account/termID history from accepted batch records, including the latest batch date and time for each pair in MM/DD/YYYY HH:MM:SS AM/PM format."),
             ("termid_account_history.xlsx", "Styled Excel version of the term/account history. Headers and columns A-B are centered; lastBatchDate in column C is left-aligned and uses MM/DD/YYYY HH:MM:SS AM/PM."),
-            ("BottlePOS PAX Batch Report.html", "Standalone themed HTML summary of the CSV outputs created by the current run."),
+            ("BottlePOS PAX Batch Report.html", "Standalone interactive HTML report with embedded Summary, PINPAD BATCH NOT CLOSED, NEEDS MAPPING OR REVIEW, TERMID ACCOUNT HISTORY, and BATCH HISTORY tabs."),
         ],
         [2850, 6510],
     )
     add_body(doc, "The primary CSV columns are STORENAME, AMOUNT, accountNumber, terminalNumber, approvedAmount, approvedCount, and lastBatchDate. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail for the terminalNumber row. lastBatchDate is the latest accepted batch timestamp found in the configured historical lookback and uses MM/DD/YYYY HH:MM:SS AM/PM. These values are not batch totals or proof of a specific terminal failure.")
     add_body(doc, "The review CSV uses the same seven columns followed by reason and details. It is intentionally limited to the information needed to understand why a row was excluded from the primary report.")
     add_body(doc, "Each report run creates a new timestamped subfolder under the configured output folder using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If two runs occur in the same second, the later folder receives a suffix such as _01, so prior outputs are not overwritten.")
+    add_body(doc, "Open BottlePOS PAX Batch Report.html for the easiest review experience. Its data is embedded locally in five ordered tabs: Summary, PINPAD BATCH NOT CLOSED, NEEDS MAPPING OR REVIEW, TERMID ACCOUNT HISTORY, and BATCH HISTORY. Each data tab supports searching and sorting without an internet connection.")
 
     add_heading(doc, "6. Optional display overrides", 1)
     add_body(doc, "Optional display rows for URL, Store Name, Device, and Account Number can be maintained directly in config.json. These values are for display only. Account Number is the TSYS merchant account used to associate a display override with the active roster. The minimal UI does not show the optional device table.")

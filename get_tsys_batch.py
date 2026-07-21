@@ -1177,7 +1177,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
   </style>
 </head>
 <body>
-  <header class="topbar">{logo_html}<div class="brand">TSYS PAX BATCH REPORT</div><div class="run-meta">Run summary<br>Generated {escape(generated)}</div></header>
+  <header class="topbar">{logo_html}<div class="brand">PAX BATCH REPORT</div><div class="run-meta">Run summary<br>Generated {escape(generated)}</div></header>
   <div class="layout">
     <aside class="sidebar"><div class="sidebar-label">REPORTING</div><div class="nav">Dashboard</div><div class="nav active">TSYS Batch Report</div><div class="nav">Historical Data</div></aside>
     <main class="main">
@@ -1472,8 +1472,8 @@ class BatchReportUi(tk.Tk):
     def __init__(self, initial_config=None):
         super().__init__()
         self.title("BottlePOS PAX Batch Report")
-        self.geometry("1180x780")
-        self.minsize(1040, 680)
+        self.geometry("1040x720")
+        self.minsize(960, 640)
         self.configure(bg="#ffffff")
 
         self.script_path = application_entrypoint()
@@ -1597,7 +1597,7 @@ class BatchReportUi(tk.Tk):
             tk.Label(header, image=self.logo_image, bg="#ffffff").pack(side="left", padx=(18, 12))
         tk.Label(
             header,
-            text="TSYS PAX BATCH REPORT",
+            text="PAX BATCH REPORT",
             bg="#ffffff",
             fg="#203239",
             font=("Segoe UI", 15, "bold"),

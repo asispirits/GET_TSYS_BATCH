@@ -1,0 +1,10 @@
+{
+  "apiBaseUrl": "https://api.mxconnect.com",
+  "apiKeyEnvironmentVariable": "MXCONNECT_API_KEY",
+  "batchLookbackDays": 3,
+  "historicalLookbackDays": 90,
+  "authorizationWindow": "last_24_h",
+  "requireAuthorizationActivity": true,
+  "outputDirectory": "./tsys-auditdata",
+  "devices": []
+}

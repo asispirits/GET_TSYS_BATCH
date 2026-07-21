@@ -1,0 +1,79 @@
+name: Build TSYS_PAX_BATCH_REPORT for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "get_tsys_batch.py"
+      - "requirements.txt"
+      - "config.template.json"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Verify Python source
+        shell: pwsh
+        run: python -m py_compile get_tsys_batch.py
+
+      - name: Build windowed UI executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name TSYS_PAX_BATCH_REPORT `
+            get_tsys_batch.py
+
+      - name: Build console CLI executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --console `
+            --name TSYS_PAX_BATCH_REPORT_CLI `
+            get_tsys_batch.py
+
+      - name: Add portable configuration template
+        shell: pwsh
+        run: Copy-Item config.template.json dist/config.json
+
+      - name: Package test bundle
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path dist/TSYS_PAX_BATCH_REPORT.exe, dist/TSYS_PAX_BATCH_REPORT_CLI.exe, dist/config.json `
+            -DestinationPath TSYS_PAX_BATCH_REPORT-windows.zip `
+            -Force
+
+      - name: Upload Windows test bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: TSYS_PAX_BATCH_REPORT-windows
+          path: TSYS_PAX_BATCH_REPORT-windows.zip
+          if-no-files-found: error

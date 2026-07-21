@@ -1113,7 +1113,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TSYS PAX BATCH REPORT SUMMARY</title>
+  <title>BottlePOS PAX Batch Report</title>
   <style>
     :root {{
       --navy: #203239;
@@ -1131,15 +1131,11 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--canvas); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }}
-    .topbar {{ height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 30px; background: var(--surface); border-bottom: 1px solid var(--border); }}
+    .topbar {{ position: relative; height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 30px; background: var(--surface); border-bottom: 1px solid var(--border); }}
     .logo {{ width: 170px; height: auto; display: block; }}
-    .brand {{ font-size: 20px; font-weight: 700; color: var(--navy); letter-spacing: .2px; }}
+    .brand {{ position: absolute; left: 50%; transform: translateX(-50%); font-size: 20px; font-weight: 700; color: var(--navy); letter-spacing: .2px; white-space: nowrap; }}
     .run-meta {{ margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; }}
-    .layout {{ display: flex; min-height: calc(100vh - 72px); }}
-    .sidebar {{ width: 205px; flex: 0 0 205px; background: var(--navy); color: #c8d1d5; padding-top: 22px; }}
-    .sidebar-label {{ padding: 0 22px 12px; color: #9fb0b7; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
-    .nav {{ padding: 12px 22px; font-size: 14px; border-left: 4px solid transparent; }}
-    .nav.active {{ background: var(--blue); color: #fff; border-left-color: #fff; font-weight: 700; }}
+    .layout {{ min-height: calc(100vh - 72px); }}
     .main {{ width: 100%; max-width: 1280px; margin: 0 auto; padding: 26px 32px 38px; }}
     .page-title {{ display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }}
     h1 {{ margin: 0; font-size: 27px; color: var(--navy); }}
@@ -1169,14 +1165,13 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
     .files li:last-child {{ border-bottom: 0; }}
     .files small {{ color: var(--muted); white-space: nowrap; }}
     footer {{ margin-top: 28px; color: var(--muted); font-size: 12px; text-align: right; }}
-    @media (max-width: 900px) {{ .sidebar {{ display: none; }} .main {{ padding: 20px; }} .cards {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .two-col {{ grid-template-columns: 1fr; }} }}
-    @media print {{ body {{ background: #fff; }} .sidebar {{ display: none; }} .main {{ max-width: none; padding: 0; }} .topbar {{ padding: 0 0 14px; }} .panel, .card {{ break-inside: avoid; }} }}
+    @media (max-width: 900px) {{ .brand {{ position: static; transform: none; flex: 1; text-align: center; }} .main {{ padding: 20px; }} .cards {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .two-col {{ grid-template-columns: 1fr; }} }}
+    @media print {{ body {{ background: #fff; }} .main {{ max-width: none; padding: 0; }} .topbar {{ padding: 0 0 14px; }} .panel, .card {{ break-inside: avoid; }} }}
   </style>
 </head>
 <body>
   <header class="topbar">{logo_html}<div class="brand">PAX BATCH REPORT</div><div class="run-meta">Run summary<br>Generated {escape(generated)}</div></header>
   <div class="layout">
-    <aside class="sidebar"><div class="sidebar-label">REPORTING</div><div class="nav">Dashboard</div><div class="nav active">TSYS Batch Report</div><div class="nav">Historical Data</div></aside>
     <main class="main">
       <div class="page-title"><h1>Batch exception summary</h1><span class="subtitle">Bottle POS</span></div>
       <div class="subtitle">Batch window: {escape(report_start.strftime('%Y-%m-%d'))} to {escape(report_end.strftime('%Y-%m-%d'))} &nbsp;|&nbsp; Authorization: {escape(auth_window)}</div>
@@ -1195,7 +1190,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
       </div>
       <h2>Important interpretation</h2>
       <div class="note">The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
-      <footer>Bottle POS &nbsp;|&nbsp; TSYS_PAX_BATCH_REPORT</footer>
+      <footer>Bottle POS</footer>
     </main>
   </div>
 </body>
@@ -1419,7 +1414,7 @@ def main():
     if raw_path:
         write_raw_batch_history(batch_records, raw_path)
 
-    summary_path = output_directory / "TSYS PAX BATCH REPORT SUMMARY.html"
+    summary_path = output_directory / "BottlePOS PAX Batch Report.html"
     write_summary_html(
         summary_path,
         batch_days,

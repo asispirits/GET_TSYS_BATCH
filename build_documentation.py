@@ -472,7 +472,7 @@ def build_technical_manual():
             ("needs_mapping_or_review.csv", "Rows excluded from the primary report because required store display data is not safe to use.", "Review-only output. It should not be emailed as an exception list."),
             ("batch_history.csv", "Accepted batch records returned for the current report window.", "Audit trail for the batch data used by the run."),
             ("termid_account_history.csv", "Distinct accountNumber + termID pairs and their latest batch date/time in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical reference for termID/account analysis; not used to assert a device identity."),
-            ("TSYS PAX BATCH REPORT SUMMARY.html", "Standalone themed HTML summary of the CSV outputs created by the current run.", "Convenience summary; the CSV files remain the detailed source outputs."),
+            ("BottlePOS PAX Batch Report.html", "Standalone themed HTML summary of the CSV outputs created by the current run.", "Convenience summary; the CSV files remain the detailed source outputs."),
         ],
         [2050, 3000, 4310],
     )
@@ -731,7 +731,7 @@ def build_user_guide():
             ("needs_mapping_or_review.csv", "Rows excluded from the primary list because store information was missing or conflicting. Fix the issue before treating them as reportable."),
             ("batch_history.csv", "Accepted batch records used by the current run."),
             ("termid_account_history.csv", "Account/termID history from accepted batch records, including the latest batch date and time for each pair in MM/DD/YYYY HH:MM:SS AM/PM format."),
-            ("TSYS PAX BATCH REPORT SUMMARY.html", "Standalone themed HTML summary of the CSV outputs created by the current run."),
+            ("BottlePOS PAX Batch Report.html", "Standalone themed HTML summary of the CSV outputs created by the current run."),
         ],
         [2850, 6510],
     )

@@ -468,9 +468,9 @@ def build_technical_manual():
         doc,
         ["File", "Purpose", "Alert-safe interpretation"],
         [
-            ("pinpad_batch_not_closed_<N>_days.csv", "Primary store-level exception report with lastBatchDate and authorization detail included.", "Rows are flagged stores/accounts with the latest accepted batch date from the historical lookback plus terminalNumber, approved amount, and approved count when returned by the authorization export."),
+            ("pinpad_batch_not_closed_<N>_days.csv", "Primary store-level exception report with account-linked termID, lastBatchDate, and authorization detail included.", "Rows are flagged stores/accounts with termID values linked through accountNumber to accepted batch history, the latest linked batch date, and approved authorization detail."),
             ("pinpad_batch_not_closed_<N>_days.xlsx", "Styled Excel companion to the primary CSV with centered headers/data in columns A-F and left-aligned lastBatchDate in column G.", "Use this version when presentation formatting is needed; the CSV remains the data-exchange file."),
-            ("needs_mapping_or_review.csv", "Rows excluded from the primary report because required store display data is not safe to use.", "Review-only output. It should not be emailed as an exception list."),
+            ("needs_mapping_or_review.csv", "Rows excluded from the primary report because store display data, account-linked termID history, or display overrides are not safe to use.", "Review-only output. It should not be emailed as an exception list."),
             ("batch_history.csv", "Accepted batch records returned for the current report window.", "Audit trail for the batch data used by the run."),
             ("termid_account_history.csv", "Distinct accountNumber + termID pairs and their latest batch date/time in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical reference for termID/account analysis; not used to assert a device identity."),
             ("termid_account_history.xlsx", "Styled Excel companion to termid_account_history.csv with centered headers/data in columns A-B and left-aligned lastBatchDate in column C.", "Use this version when presentation formatting is needed; the CSV remains the data-exchange file."),
@@ -523,10 +523,10 @@ def build_technical_manual():
         "Aggregate approved authorized amount and count by account and terminalNumber, then roll the amounts up to the store/account for the primary CSV.",
         "Fetch accepted batch history for the configured historical lookback when candidates exist. Use the latest accepted batch timestamp per account for lastBatchDate and the termID/account history file.",
         "Use the active roster location name as the authoritative store name. Apply a configured URL, store-name, or device value only as an optional display override for a known accountNumber.",
-        "Write the primary row only when the account is in the active roster, the store name is available, and there is no conflicting configured display override.",
+        "Write the primary row only when the account is in the active roster, a termID exists in accepted batch history, the store name is available, and there is no conflicting configured display override. Accounts without a termID history are placed in needs_mapping_or_review.csv.",
     ]:
         add_list_item(doc, item, num, after=5, line=1.167)
-    add_note(doc, "Important.", "The primary CSV is store/account level. lastBatchDate is historical context, while terminalNumber and approved authorization fields are supporting activity detail; the report does not claim an exact terminal-to-batch failure.", fill=RED_FILL, color=RED)
+    add_note(doc, "Important.", "The primary CSV is store/account level. termID values are linked through accountNumber to accepted batch history; approved authorization fields remain supporting activity detail. The report does not claim an exact terminal-to-batch failure.", fill=RED_FILL, color=RED)
 
     add_heading(doc, "6. Time windows and amount semantics", 1)
     add_body(doc, "batchLookbackDays controls the batch lookback used by the primary report. The date-window helper calculates a local cutoff at 04:00 and passes the resulting inclusive start and end dates to the TSYS batch export. The report UI exposes this as Report timeframe (days), with a range of 1 through 365.")
@@ -605,8 +605,8 @@ def build_technical_manual():
             ("Primary / AMOUNT", "Sum of approved authorizedAmount values for the account.", "Exposure/supporting amount, not batch amount."),
             ("Primary / accountNumber", "TSYS merchant account associated with the flagged store.", "The account-level batching identity used by the report."),
             ("Primary / lastBatchDate", "Latest accepted batch timestamp for the account in the configured historical lookback, formatted as MM/DD/YYYY HH:MM:SS AM/PM.", "Historical context; blank when no accepted batch was returned in that lookback."),
-            ("Primary / terminalNumber", "Terminal number returned in authorization detail.", "Supporting activity detail; not proof of an unbatched terminal."),
-            ("Primary / approvedAmount and approvedCount", "Approved authorization amount and count for the terminalNumber row.", "Supporting activity detail, not batch totals."),
+            ("Primary / termID", "One or more termID values linked to the accountNumber through accepted batch history.", "Multiple values are comma-separated; blank values are routed to review rather than guessed."),
+            ("Primary / approvedAmount and approvedCount", "Approved authorization amount and count for the authorization-detail row.", "Supporting activity detail, not batch totals."),
             ("History / termID", "termID returned by accepted batch records.", "Used for historical account/term analysis only."),
         ],
         [2500, 3500, 3360],
@@ -646,7 +646,7 @@ def build_technical_manual():
             ("MXConnect authentication failed with 404.", "Wrong base URL, stale config, or endpoint mismatch.", "Use https://api.mxconnect.com as apiBaseUrl and confirm the build came from the current repository workflow."),
             ("Report exited with code 1.", "The combined report process reported a runtime/config/API error.", "Read the preceding log line; correct the root error before relying on the CSV."),
             ("No primary rows.", "No approved authorization activity among candidate stores, or all candidate accounts had accepted batches.", "Check batch window, authorization window, active roster, and the detail/review files."),
-            ("Rows appear in needs_mapping_or_review.csv.", "Active roster display data is missing or config overrides conflict.", "Correct the store name or duplicate account override; do not copy review rows into the email list."),
+            ("Rows appear in needs_mapping_or_review.csv.", "Active roster display data is missing, account-linked termID history is unavailable, or config overrides conflict.", "Review the reason/details columns; correct the source mapping or duplicate account override and rerun."),
             ("Output folder appears not to save.", "The UI was not saving the active config path or the process was using a different config.", "Confirm the Config file path shown in the UI, click Save config, and inspect that exact file."),
         ],
         [2800, 3000, 3560],
@@ -656,7 +656,7 @@ def build_technical_manual():
     add_heading(doc, "14. Known limitations and interpretation", 1)
     for item in [
         "The report detects account/store-level exceptions. It does not identify the exact device that did not batch.",
-        "lastBatchDate is historical context from the configured lookback and may be blank when no accepted batch was returned in that period. terminalNumber and authorization detail are not joined to a specific batch failure claim.",
+        "termID values are linked through accountNumber to accepted batch history. Accounts with multiple historical termIDs show all linked values; accounts without a termID history are routed to review. lastBatchDate is the latest linked accepted batch timestamp and authorization detail is not a specific batch failure claim.",
         "The batch export may contain termID and accountNumber, but the current alert decision uses the presence of any accepted batch for the account in the selected window.",
         "URL is optional display data maintained in config.json; it is not required for the API decision.",
         "The historical files represent the records returned for the chosen lookback and are useful for review, not a complete permanent TSYS ledger.",
@@ -729,9 +729,9 @@ def build_user_guide():
         doc,
         ["File", "What to use it for"],
         [
-            ("pinpad_batch_not_closed_3_days.csv", "Primary data-exchange report with lastBatchDate plus terminalNumber and approved authorization detail included on each row when returned."),
+            ("pinpad_batch_not_closed_3_days.csv", "Primary data-exchange report with account-linked termID, lastBatchDate, and approved authorization detail included on each row when available."),
             ("pinpad_batch_not_closed_3_days.xlsx", "Styled Excel version of the primary report. Headers and columns A-F are centered; lastBatchDate in column G is left-aligned."),
-            ("needs_mapping_or_review.csv", "Rows excluded from the primary list because store information was missing or conflicting. Fix the issue before treating them as reportable."),
+            ("needs_mapping_or_review.csv", "Rows excluded from the primary list because store information, account-linked termID history, or display overrides were missing or conflicting. Fix the issue before treating them as reportable."),
             ("batch_history.csv", "Accepted batch records used by the current run."),
             ("termid_account_history.csv", "Account/termID history from accepted batch records, including the latest batch date and time for each pair in MM/DD/YYYY HH:MM:SS AM/PM format."),
             ("termid_account_history.xlsx", "Styled Excel version of the term/account history. Headers and columns A-B are centered; lastBatchDate in column C is left-aligned and uses MM/DD/YYYY HH:MM:SS AM/PM."),
@@ -739,7 +739,7 @@ def build_user_guide():
         ],
         [2850, 6510],
     )
-    add_body(doc, "The primary CSV columns are STORENAME, AMOUNT, accountNumber, terminalNumber, approvedAmount, approvedCount, and lastBatchDate. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail for the terminalNumber row. lastBatchDate is the latest accepted batch timestamp found in the configured historical lookback and uses MM/DD/YYYY HH:MM:SS AM/PM. These values are not batch totals or proof of a specific terminal failure.")
+    add_body(doc, "The primary CSV columns are STORENAME, AMOUNT, accountNumber, termID, approvedAmount, approvedCount, and lastBatchDate. AMOUNT is the sum of approved authorization amounts returned for the store account; approvedAmount and approvedCount show the matching authorization detail row. termID values are linked through accountNumber to accepted batch history and multiple values are comma-separated. lastBatchDate is the latest linked accepted batch timestamp and uses MM/DD/YYYY HH:MM:SS AM/PM. These values are not batch totals or proof of a specific terminal failure.")
     add_body(doc, "The review CSV uses the same seven columns followed by reason and details. It is intentionally limited to the information needed to understand why a row was excluded from the primary report.")
     add_body(doc, "Each report run creates a new timestamped subfolder under the configured output folder using MM-DD-YYYY hh-mm-ss AM/PM. The separators are filesystem-safe for Windows. If two runs occur in the same second, the later folder receives a suffix such as _01, so prior outputs are not overwritten.")
     add_body(doc, "Open BottlePOS PAX Batch Report.html for the easiest review experience. Its data is embedded locally in five ordered tabs: Summary, PINPAD BATCH NOT CLOSED, NEEDS MAPPING OR REVIEW, TERMID ACCOUNT HISTORY, and BATCH HISTORY. Each data tab supports searching and sorting without an internet connection.")
@@ -764,12 +764,12 @@ def build_user_guide():
             ("Set MXCONNECT_API_KEY before running the API report.", "Use the official Windows package, which contains the build-time key. If running source or a local build, set the fallback variable for the same Windows user and restart the program without printing the value."),
             ("Output folder did not change.", "Confirm the Config file path, choose the folder again, and click Save config. Inspect that exact config.json path."),
             ("No rows in the primary CSV.", "This may be correct: no candidate stores had approved authorization activity, or all active stores with activity had an accepted batch."),
-            ("A store is in the review CSV.", "Review the reason/details columns. Correct the store name or conflicting account override, then rerun."),
+            ("A store is in the review CSV.", "Review the reason/details columns. Correct the source mapping or conflicting account override, then rerun."),
             ("UI says report exited with code 1.", "Read the error immediately above it in the log. Correct the API key, config, network, or API error and rerun."),
         ],
         [2900, 6460],
     )
-    add_note(doc, "Safe interpretation.", "Use the primary CSV as a store-level follow-up list. Its terminalNumber and approved authorization fields provide supporting exposure detail. Do not describe a row as a verified unbatched physical device unless separate authoritative evidence is available.", fill=RED_FILL, color=RED)
+    add_note(doc, "Safe interpretation.", "Use the primary CSV as a store-level follow-up list. Its account-linked termID and approved authorization fields provide supporting context. Do not describe a row as a verified unbatched physical device unless separate authoritative evidence is available.", fill=RED_FILL, color=RED)
 
     add_source_note(doc, "This guide reflects the current Windows build and configuration template in asispirits/GET_TSYS_BATCH.")
     path = OUT_DIR / "TSYS_PAX_BATCH_REPORT_User_Setup_and_Operation_Guide.docx"

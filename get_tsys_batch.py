@@ -3,7 +3,8 @@
 
 The report flags an active TSYS store when it has approved authorization
 activity in the configured authorization window and no accepted batch for the
-store's account in the report window. It deliberately does not claim that a
+store's account in the report window. It links displayed termID values through
+accountNumber and accepted batch history, but does not claim that a
 specific termID or physical device failed to batch. Optional configuration
 rows provide display overrides only; MXConnect's active merchant roster is the
 authoritative store list.
@@ -48,7 +49,7 @@ EMAIL_KEYS = [
     "STORENAME",
     "AMOUNT",
     "accountNumber",
-    "terminalNumber",
+    "termID",
     "approvedAmount",
     "approvedCount",
     "lastBatchDate",
@@ -461,10 +462,12 @@ def create_store_report(
     auth_summary,
     current_batch_records,
     last_batch_by_account=None,
+    term_history_by_account=None,
 ):
     roster = active_tsys_roster(uar_records)
     overrides, override_conflicts = store_display_overrides(raw_devices)
     last_batch_by_account = last_batch_by_account or {}
+    term_history_by_account = term_history_by_account or {}
     batched_accounts = {
         text(record.get("accountNumber"))
         for record in current_batch_records
@@ -494,6 +497,12 @@ def create_store_report(
     for account in sorted(auth_by_account):
         if account in batched_accounts:
             continue
+        term_history = term_history_by_account.get(account, {})
+        term_ids = term_history.get("termIDs", [])
+        report_term_id = ", ".join(term_ids)
+        report_last_batch_date = term_history.get("lastBatchDate") or last_batch_by_account.get(
+            account, ""
+        )
         merchant = roster.get(account)
         if merchant is None:
             review_rows.append(
@@ -501,7 +510,19 @@ def create_store_report(
                     "ACCOUNT_NOT_FOUND_IN_ACTIVE_TSYS_ROSTER",
                     "",
                     accountNumber=account,
-                    lastBatchDate=last_batch_by_account.get(account, ""),
+                    termID=report_term_id,
+                    lastBatchDate=report_last_batch_date,
+                )
+            )
+            continue
+
+        if not term_ids:
+            review_rows.append(
+                review_row(
+                    "NO_TERMID_HISTORY_FOR_ACCOUNT",
+                    "No accepted batch history in the configured lookback could link this accountNumber to a termID.",
+                    accountNumber=account,
+                    lastBatchDate=report_last_batch_date,
                 )
             )
             continue
@@ -514,7 +535,8 @@ def create_store_report(
                     "More than one configured display row exists for this account.",
                     STORENAME=merchant["storeName"],
                     accountNumber=account,
-                    lastBatchDate=last_batch_by_account.get(account, ""),
+                    termID=report_term_id,
+                    lastBatchDate=report_last_batch_date,
                 )
             )
             continue
@@ -526,7 +548,8 @@ def create_store_report(
                     "MISSING_STORE_NAME",
                     "Active TSYS account has no location name.",
                     accountNumber=account,
-                    lastBatchDate=last_batch_by_account.get(account, ""),
+                    termID=report_term_id,
+                    lastBatchDate=report_last_batch_date,
                 )
             )
             continue
@@ -538,10 +561,10 @@ def create_store_report(
                     "STORENAME": store_name,
                     "AMOUNT": f"{summary['amount']:.2f}",
                     "accountNumber": account,
-                    "terminalNumber": terminal,
+                    "termID": report_term_id,
                     "approvedAmount": f"{detail['amount']:.2f}",
                     "approvedCount": detail["count"],
-                    "lastBatchDate": last_batch_by_account.get(account, ""),
+                    "lastBatchDate": report_last_batch_date,
                 }
             )
 
@@ -611,6 +634,28 @@ def latest_batch_dates_by_account(records):
     return {
         account: detail["lastBatchDate"]
         for account, detail in latest.items()
+    }
+
+
+def term_history_by_account(records):
+    by_pair, _ = batch_index(records)
+    history = defaultdict(lambda: {
+        "termIDs": [],
+        "lastBatchDate": "",
+        "_sortValue": "",
+    })
+    for (account, term), detail in sorted(by_pair.items()):
+        account_history = history[account]
+        account_history["termIDs"].append(term)
+        if detail["_sortValue"] > account_history["_sortValue"]:
+            account_history["lastBatchDate"] = detail["lastBatchDate"]
+            account_history["_sortValue"] = detail["_sortValue"]
+    return {
+        account: {
+            "termIDs": detail["termIDs"],
+            "lastBatchDate": detail["lastBatchDate"],
+        }
+        for account, detail in history.items()
     }
 
 
@@ -877,7 +922,7 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     review_rows = data_by_label.get("Store review", [])
     detail_rows = data_by_label.get("Authorization detail", []) or [
         row for row in primary_rows
-        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+        if text(row.get("accountNumber")) or text(row.get("termID")) or text(row.get("terminalNumber"))
     ]
     accepted_batch_rows = data_by_label.get("Accepted batch history", [])
     raw_batch_rows = data_by_label.get("Raw batch export", [])
@@ -1005,7 +1050,7 @@ def write_summary_docx(path, batch_days, auth_window, report_start, report_end, 
     )
 
     add_heading(doc, "Important interpretation", 1)
-    interpretation = "The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch."
+    interpretation = "The primary report is store/account level. termID values are linked through accountNumber to accepted batch history; lastBatchDate is the latest accepted batch timestamp in that history. Approved authorization fields remain supporting activity detail, not proof of the exact terminal that failed to batch."
     if review_rows:
         reason_text = ", ".join(f"{reason}: {count}" for reason, count in reason_counts.most_common(4))
         interpretation += f" Review exclusions by reason: {reason_text}."
@@ -1071,7 +1116,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
     review_rows = data_by_label.get("Store review", [])
     detail_rows = data_by_label.get("Authorization detail", []) or [
         row for row in primary_rows
-        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+        if text(row.get("accountNumber")) or text(row.get("termID")) or text(row.get("terminalNumber"))
     ]
     accepted_batch_rows = data_by_label.get("Accepted batch history", [])
     raw_batch_rows = data_by_label.get("Raw batch export", [])
@@ -1228,7 +1273,7 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
         <section><h2>Output files</h2><div class="panel"><ul class="files">{file_list_html}</ul></div></section>
       </div>
       <h2>Important interpretation</h2>
-      <div class="note">The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
+      <div class="note">The primary report is store/account level. termID values are linked through accountNumber to accepted batch history; lastBatchDate is the latest accepted batch timestamp in that history. Approved authorization fields remain supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: {reason_text}. {escape(ambiguous_text)}</div>
       <footer>Bottle POS</footer>
     </main>
   </div>
@@ -1268,7 +1313,7 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
 
     detail_rows = [
         row for row in primary_rows
-        if text(row.get("accountNumber")) or text(row.get("terminalNumber"))
+        if text(row.get("accountNumber")) or text(row.get("termID")) or text(row.get("terminalNumber"))
     ]
     primary_total = sum(parse_amount(row.get("AMOUNT")) for row in unique_primary_rows)
     detail_total = sum(parse_amount(row.get("approvedAmount")) for row in detail_rows)
@@ -1491,7 +1536,7 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
           <section><h2>Embedded data</h2><div class="panel"><ul class="files">${filesHtml}</ul></div></section>
         </div>
         <h2>Important interpretation</h2>
-        <div class="note">The primary report is store/account level. lastBatchDate is the latest accepted batch date found in the configured historical lookback; terminalNumber and approved authorization fields are supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: ${escapeHtml(REPORT_META.reasonText)}. ${escapeHtml(REPORT_META.ambiguousText)}</div>`;
+        <div class="note">The primary report is store/account level. termID values are linked through accountNumber to accepted batch history; lastBatchDate is the latest accepted batch timestamp in that history. Approved authorization fields remain supporting activity detail, not proof of the exact terminal that failed to batch. Review exclusions by reason: ${escapeHtml(REPORT_META.reasonText)}. ${escapeHtml(REPORT_META.ambiguousText)}</div>`;
     }
 
     function renderTable(panel, datasetId) {
@@ -1791,6 +1836,7 @@ def main():
         ]
         print(f"Historical activity reviewed: {len(history_records)} records; {len(accepted_history_records)} accepted")
     last_batch_by_account = latest_batch_dates_by_account(accepted_history_records)
+    term_history_accounts = term_history_by_account(accepted_history_records)
 
     print("Step 4 of 5: Checking authorization activity...")
     authorization_records = fetch_all(
@@ -1807,6 +1853,7 @@ def main():
         auth_summary,
         current_records,
         last_batch_by_account,
+        term_history_accounts,
     )
 
     print("Step 5 of 5: Writing report files...")

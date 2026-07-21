@@ -125,6 +125,20 @@ def resolve_output_directory(config_path, config):
     return output_path.resolve()
 
 
+def create_timestamped_output_directory(output_directory):
+    output_directory = Path(output_directory)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    attempt = 0
+    while True:
+        suffix = f"_{attempt:02d}" if attempt else ""
+        run_directory = output_directory / f"{timestamp}{suffix}"
+        try:
+            run_directory.mkdir(parents=True, exist_ok=False)
+            return run_directory
+        except FileExistsError:
+            attempt += 1
+
+
 def portable_output_directory(config_path, output_path):
     selected = Path(text(output_path)).expanduser()
     if not selected.is_absolute():
@@ -1014,7 +1028,9 @@ def run_historical(args):
     config_path = Path(args.config or "config.json").expanduser().resolve()
     config, _ = load_config(config_path)
     historical_days = args.historical_days or int(config.get("historicalLookbackDays", 90))
-    output_directory = resolve_output_directory(config_path, config) / "historical"
+    output_directory = create_timestamped_output_directory(
+        resolve_output_directory(config_path, config) / "historical"
+    )
     client = make_client(config)
     client.authenticate()
 
@@ -1100,7 +1116,9 @@ def main():
     if base_url.endswith(AUTH_PATH):
         base_url = base_url[: -len(AUTH_PATH)].rstrip("/")
 
-    output_directory = resolve_output_directory(config_path, config)
+    output_directory = create_timestamped_output_directory(
+        resolve_output_directory(config_path, config)
+    )
 
     email_path = Path(args.output).expanduser() if args.output else output_directory / f"pinpad_batch_not_closed_{batch_days}_days.csv"
     review_path = Path(args.review_output).expanduser() if args.review_output else output_directory / "needs_mapping_or_review.csv"
@@ -1110,6 +1128,7 @@ def main():
     print(f"Loaded {len(raw_devices)} optional store display overrides.")
     print(f"MXConnect base URL: {base_url}")
     print(f"Batch window: {batch_days} days; authorization window: {auth_window}")
+    print(f"Run output directory: {output_directory}")
     stdout.flush()
 
     # Clear any previous email data before starting a new API run. A failed

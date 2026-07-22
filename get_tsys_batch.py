@@ -62,6 +62,11 @@ RAW_BATCH_KEYS = [
     "fileId", "filePath", "fileName", "id", "accountId", "entityId", "acl",
     "labels", "locationId", "name", "uar", "domain",
 ]
+BATCH_HISTORY_KEYS = [
+    "accountNumber", "termID", "batchNumber", "batchDate",
+    "salesAmount", "salesCount", "refundAmount", "refundCount",
+    "netAmount", "netCount",
+]
 
 
 def text(value):
@@ -607,8 +612,8 @@ def batch_index(records):
     return by_pair, term_accounts
 
 
-def format_batch_timestamp(record):
-    raw_timestamp = text(record.get("created")) or text(record.get("batchDate"))
+def format_timestamp(raw_timestamp):
+    raw_timestamp = text(raw_timestamp)
     if raw_timestamp:
         try:
             parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
@@ -616,6 +621,21 @@ def format_batch_timestamp(record):
         except ValueError:
             return raw_timestamp.replace("T", " ").rstrip("Zz")
     return ""
+
+
+def format_batch_timestamp(record):
+    return format_timestamp(text(record.get("created")) or text(record.get("batchDate")))
+
+
+def compact_batch_history_rows(records):
+    rows = []
+    for record in records:
+        row = {key: text(record.get(key)) for key in BATCH_HISTORY_KEYS}
+        row["batchDate"] = format_timestamp(
+            text(record.get("batchDate")) or text(record.get("created"))
+        )
+        rows.append(row)
+    return rows
 
 
 def latest_batch_dates_by_account(records):
@@ -668,7 +688,7 @@ def write_raw_batch_history(records, path):
     write_csv(records, path, keys)
 
 
-def write_term_history(records, path):
+def build_term_history_rows(records):
     by_pair, _ = batch_index(records)
     rows = []
     for (account, term), detail in sorted(by_pair.items()):
@@ -679,7 +699,15 @@ def write_term_history(records, path):
                 "lastBatchDate": detail["lastBatchDate"],
             }
         )
-    write_csv(rows, path, ["accountNumber", "termID", "lastBatchDate"])
+    return rows
+
+
+def write_term_history(records, path):
+    write_csv(
+        build_term_history_rows(records),
+        path,
+        ["accountNumber", "termID", "lastBatchDate"],
+    )
 
 
 def write_term_history_xlsx(records, path):
@@ -1286,19 +1314,12 @@ def write_summary_html(path, batch_days, auth_window, report_start, report_end, 
     return path
 
 
-def write_interactive_summary_html(path, batch_days, auth_window, report_start, report_end, csv_specs):
-    csv_data = []
-    for label, csv_path, description in csv_specs:
-        if csv_path:
-            path_value = Path(csv_path)
-            csv_data.append((label, path_value, description, read_csv_rows(path_value)))
-
-    data_by_label = {label: rows for label, _, _, rows in csv_data}
-    path_by_label = {label: path_value for label, path_value, _, _ in csv_data}
+def write_interactive_summary_html(path, batch_days, auth_window, report_start, report_end, data_specs):
+    data_by_label = {label: rows for label, _, _, rows in data_specs}
+    filename_by_label = {label: filename for label, filename, _, _ in data_specs}
     primary_rows = data_by_label.get("Primary exception report", [])
     review_rows = data_by_label.get("Store review", [])
     accepted_batch_rows = data_by_label.get("Accepted batch history", [])
-    raw_batch_rows = data_by_label.get("Raw batch export", [])
 
     unique_primary_rows = []
     seen_accounts = set()
@@ -1336,36 +1357,29 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
     datasets = {
         "primary": {
             "label": "PINPAD BATCH NOT CLOSED",
-            "filename": path_by_label.get("Primary exception report", Path("pinpad_batch_not_closed.csv")).name,
+            "filename": filename_by_label.get("Primary exception report", "PINPAD_BATCH_NOT_CLOSED"),
             "columns": columns_for(primary_rows, EMAIL_KEYS),
             "rows": primary_rows,
         },
         "review": {
             "label": "NEEDS MAPPING OR REVIEW",
-            "filename": path_by_label.get("Store review", Path("needs_mapping_or_review.csv")).name,
+            "filename": filename_by_label.get("Store review", "NEEDS_MAPPING_OR_REVIEW"),
             "columns": columns_for(review_rows, REVIEW_KEYS),
             "rows": review_rows,
         },
         "term_history": {
             "label": "TERMID ACCOUNT HISTORY",
-            "filename": path_by_label.get("Term/account history", Path("termid_account_history.csv")).name,
+            "filename": filename_by_label.get("Term/account history", "TERMID_ACCOUNT_HISTORY"),
             "columns": columns_for( data_by_label.get("Term/account history", []), ["accountNumber", "termID", "lastBatchDate"]),
             "rows": data_by_label.get("Term/account history", []),
         },
         "batch_history": {
             "label": "BATCH HISTORY",
-            "filename": path_by_label.get("Accepted batch history", Path("batch_history.csv")).name,
-            "columns": columns_for(accepted_batch_rows, RAW_BATCH_KEYS),
+            "filename": filename_by_label.get("Accepted batch history", "BATCH_HISTORY"),
+            "columns": columns_for(accepted_batch_rows, BATCH_HISTORY_KEYS),
             "rows": accepted_batch_rows,
         },
     }
-    if "Raw batch export" in path_by_label:
-        datasets["raw_batch"] = {
-            "label": "RAW BATCH EXPORT",
-            "filename": path_by_label["Raw batch export"].name,
-            "columns": columns_for(raw_batch_rows, RAW_BATCH_KEYS),
-            "rows": raw_batch_rows,
-        }
 
     finding = (
         f"{len(unique_primary_rows):,} store(s) met the report criteria, representing "
@@ -1662,43 +1676,6 @@ def make_client(config):
     return MxConnectClient(base_url, api_key)
 
 
-def run_historical(args):
-    started = perf_counter()
-    config_path = Path(args.config or "config.json").expanduser().resolve()
-    config, _ = load_config(config_path)
-    historical_days = args.historical_days or int(config.get("historicalLookbackDays", 90))
-    output_directory = create_timestamped_output_directory(
-        resolve_output_directory(config_path, config) / "historical"
-    )
-    print("Step 1 of 3: Connecting to MXConnect...")
-    client = make_client(config)
-    client.authenticate()
-
-    start_time, end_time = date_window(historical_days)
-    print("Step 2 of 3: Fetching historical batch activity...")
-    base_url = text(config.get("apiBaseUrl")) or BASE_URL
-    if base_url.endswith(AUTH_PATH):
-        base_url = base_url[: -len(AUTH_PATH)].rstrip("/")
-    batch_records = fetch_all(
-        client,
-        batch_url(base_url, start_time.strftime("%Y-%m-%d"), end_time.strftime("%Y-%m-%d")),
-    )
-    accepted_batch_records = [record for record in batch_records if is_accepted_batch(record)]
-    print(f"Batch activity reviewed: {len(batch_records)} records; {len(accepted_batch_records)} accepted")
-    print("Step 3 of 3: Writing historical reports...")
-    write_raw_batch_history(accepted_batch_records, output_directory / "batch_history.csv")
-    term_history_path = output_directory / "termid_account_history.csv"
-    write_term_history(accepted_batch_records, term_history_path)
-    write_term_history_xlsx(accepted_batch_records, term_history_path.with_suffix(".xlsx"))
-
-    roster_records = fetch_uar(client)
-    write_active_roster(roster_records, output_directory / "active_tsys_roster.csv")
-    print("Historical refresh complete.")
-    print(f"Reports created: 4")
-    print(f"Output directory: {output_directory}")
-    print(f"Elapsed time: {perf_counter() - started:.1f} seconds")
-
-
 def parse_args():
     parser = ArgumentParser(description="Generate the store-level TSYS PAX batch report.")
     parser.add_argument(
@@ -1708,10 +1685,6 @@ def parse_args():
     parser.add_argument(
         "--run-report", action="store_true",
         help="Run the report without opening the UI; intended for Task Scheduler",
-    )
-    parser.add_argument(
-        "--refresh-historical", action="store_true",
-        help="Refresh historical batch and active-roster CSV files without opening the UI",
     )
     parser.add_argument(
         "-c", "--config", default=None,
@@ -1730,18 +1703,6 @@ def parse_args():
         help="MXConnect authorization quick window (default: config authorizationWindow or last_24_h)",
     )
     parser.add_argument(
-        "-o", "--output", default=None,
-        help="Email CSV output path",
-    )
-    parser.add_argument(
-        "--review-output", default=None,
-        help="Store review CSV output path",
-    )
-    parser.add_argument(
-        "-tf", "--tsys_filename", dest="raw_batch_output", default=None,
-        help="Optional raw batch CSV output path retained for compatibility",
-    )
-    parser.add_argument(
         "--log-file", default=None,
         help="Internal log file path used when the windowed executable runs in report mode",
     )
@@ -1752,9 +1713,6 @@ def main():
     started = perf_counter()
     args = parse_args()
     configure_process_output(args.log_file)
-    if args.refresh_historical:
-        run_historical(args)
-        return 0
 
     config_path = Path(args.config or "config.json").expanduser().resolve()
     config, raw_devices = load_config(config_path)
@@ -1774,20 +1732,11 @@ def main():
         resolve_output_directory(config_path, config)
     )
 
-    email_path = Path(args.output).expanduser() if args.output else output_directory / f"pinpad_batch_not_closed_{batch_days}_days.csv"
-    excel_path = email_path.with_suffix(".xlsx")
-    review_path = Path(args.review_output).expanduser() if args.review_output else output_directory / "needs_mapping_or_review.csv"
-    raw_path = Path(args.raw_batch_output).expanduser() if args.raw_batch_output else None
-
     print(f"Loaded {len(raw_devices)} optional store display overrides.")
     print(f"MXConnect base URL: {base_url}")
     print(f"Batch window: {batch_days} days; authorization window: {auth_window}")
     print(f"Run output directory: {output_directory}")
     flush_output()
-
-    # Clear any previous email data before starting a new API run. A failed
-    # run must not leave yesterday's CSV looking like the current result.
-    write_csv([], email_path, EMAIL_KEYS)
 
     print("Step 1 of 5: Connecting to MXConnect...")
     client = make_client(config)
@@ -1856,20 +1805,10 @@ def main():
         term_history_accounts,
     )
 
-    print("Step 5 of 5: Writing report files...")
-    write_csv(email_rows, email_path, EMAIL_KEYS)
-    write_primary_xlsx(email_rows, excel_path)
-    write_csv(review_rows, review_path, REVIEW_KEYS)
-    batch_history_path = output_directory / "batch_history.csv"
-    term_history_path = output_directory / "termid_account_history.csv"
-    term_history_xlsx_path = term_history_path.with_suffix(".xlsx")
-    write_raw_batch_history(accepted_batch_records, batch_history_path)
-    write_term_history(accepted_history_records, term_history_path)
-    write_term_history_xlsx(accepted_history_records, term_history_xlsx_path)
-    if raw_path:
-        write_raw_batch_history(batch_records, raw_path)
-
+    print("Step 5 of 5: Writing HTML report...")
     summary_path = output_directory / "BottlePOS PAX Batch Report.html"
+    term_history_rows = build_term_history_rows(accepted_history_records)
+    batch_history_rows = compact_batch_history_rows(accepted_batch_records)
     write_interactive_summary_html(
         summary_path,
         batch_days,
@@ -1877,21 +1816,17 @@ def main():
         report_start,
         report_end,
         [
-            ("Primary exception report", email_path, "Stores that met the primary report criteria."),
-            ("Store review", review_path, "Rows excluded from the primary report for review."),
-            ("Accepted batch history", batch_history_path, "Accepted batch records used by this run."),
-            ("Term/account history", term_history_path, "AccountNumber and termID pairs from accepted batch records."),
-            ("Raw batch export", raw_path, "Optional unfiltered batch export when requested."),
+            ("Primary exception report", "PINPAD_BATCH_NOT_CLOSED", "Stores that met the primary report criteria.", email_rows),
+            ("Store review", "NEEDS_MAPPING_OR_REVIEW", "Rows excluded from the primary report for review.", review_rows),
+            ("Accepted batch history", "BATCH_HISTORY", "Compact accepted batch history used by this run.", batch_history_rows),
+            ("Term/account history", "TERMID_ACCOUNT_HISTORY", "AccountNumber and termID pairs from accepted batch history.", term_history_rows),
         ],
     )
 
-    output_paths = [email_path, excel_path, review_path, batch_history_path, term_history_path, term_history_xlsx_path, summary_path]
-    if raw_path:
-        output_paths.append(raw_path)
     print("Report complete.")
     print(f"Stores flagged: {len(email_rows)}")
     print(f"Stores excluded for review: {len(review_rows)}")
-    print(f"Reports created: {len(output_paths)}")
+    print("Reports created: 1 HTML report")
     print(f"Output directory: {output_directory}")
     print(f"Elapsed time: {perf_counter() - started:.1f} seconds")
     return 0
@@ -2105,7 +2040,6 @@ class BatchReportUi(tk.Tk):
         actions.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 8))
         ttk.Button(actions, text="Save config", command=self.save_config_from_ui).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Run report", command=self.run_report).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Refresh historical data", command=self.refresh_historical).pack(side="left")
 
         self.log_box = tk.Text(
             outer,
@@ -2401,9 +2335,6 @@ class BatchReportUi(tk.Tk):
 
     def run_report(self):
         self.start_command(["--run-report"])
-
-    def refresh_historical(self):
-        self.start_command(["--refresh-historical"])
 
 
 def launch_ui(initial_config=None):

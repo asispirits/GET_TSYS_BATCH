@@ -33,11 +33,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
+      - name: Create build-time API key module
+        shell: pwsh
+        env:
+          MXCONNECT_API_KEY: ${{ secrets.MXCONNECT_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MXCONNECT_API_KEY)) {
+            throw "The MXCONNECT_API_KEY repository secret is required for this build."
+          }
+          $keyLiteral = $env:MXCONNECT_API_KEY | ConvertTo-Json -Compress
+          "EMBEDDED_API_KEY = $keyLiteral" | Set-Content -Path embedded_api_key.py -Encoding utf8
+
       - name: Verify Python source
         shell: pwsh
         run: python -m py_compile get_tsys_batch.py
 
-      - name: Build windowed UI executable
+      - name: Build combined windowed executable
         shell: pwsh
         run: |
           python -m PyInstaller `
@@ -45,19 +56,18 @@ jobs:
             --clean `
             --onefile `
             --windowed `
-            --name TSYS_PAX_BATCH_REPORT `
+            --icon "bpos.ico" `
+            --add-data "bottlepos_logo.png;." `
+            --name "BottlePOS PAX Batch Report" `
             get_tsys_batch.py
 
-      - name: Build console CLI executable
+      - name: Remove build-time API key source
+        if: always()
         shell: pwsh
         run: |
-          python -m PyInstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --console `
-            --name TSYS_PAX_BATCH_REPORT_CLI `
-            get_tsys_batch.py
+          if (Test-Path embedded_api_key.py) {
+            Remove-Item embedded_api_key.py -Force
+          }
 
       - name: Add portable configuration template
         shell: pwsh
@@ -67,13 +77,13 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path dist/TSYS_PAX_BATCH_REPORT.exe, dist/TSYS_PAX_BATCH_REPORT_CLI.exe, dist/config.json `
-            -DestinationPath TSYS_PAX_BATCH_REPORT-windows.zip `
+            -Path "dist/BottlePOS PAX Batch Report.exe", dist/config.json `
+            -DestinationPath BottlePOS_PAX_BATCH_REPORT-windows.zip `
             -Force
 
       - name: Upload Windows test bundle
         uses: actions/upload-artifact@v4
         with:
-          name: TSYS_PAX_BATCH_REPORT-windows
-          path: TSYS_PAX_BATCH_REPORT-windows.zip
+          name: BottlePOS_PAX_BATCH_REPORT-windows
+          path: BottlePOS_PAX_BATCH_REPORT-windows.zip
           if-no-files-found: error

@@ -12,6 +12,7 @@ authoritative store list.
 
 import csv
 import base64
+import hashlib
 from html import escape
 import json
 import os
@@ -67,6 +68,10 @@ BATCH_HISTORY_KEYS = [
     "salesAmount", "salesCount", "refundAmount", "refundCount",
     "netAmount", "netCount",
 ]
+REPORT_CATALOG_FILENAME = "BPOS_REPORT_CATALOG.json"
+REPORT_CATALOG_SCHEMA_VERSION = 1
+MIN_CONSTANT_REPORTS = 3
+TERM_HISTORY_CONSTANT_FIELD = "termHistory"
 
 
 def text(value):
@@ -593,23 +598,276 @@ def build_auth_summary(records, require_approved):
     return summary
 
 
-def batch_index(records):
-    by_pair = {}
-    term_accounts = {}
-    for record in records:
-        account = text(record.get("accountNumber"))
-        term = text(record.get("termID"))
-        if not account or not term:
-            continue
-        pair = (account, term)
-        sort_value = text(record.get("created")) or text(record.get("batchDate"))
-        if pair not in by_pair or sort_value > by_pair[pair]["_sortValue"]:
-            by_pair[pair] = {
-                "lastBatchDate": format_batch_timestamp(record),
-                "_sortValue": sort_value,
+def canonical_json(value):
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def fingerprint_records(records):
+    normalized_records = sorted(canonical_json(record) for record in records)
+    return hashlib.sha256(
+        canonical_json(normalized_records).encode("utf-8")
+    ).hexdigest()
+
+
+class AccountReportCatalog:
+    """Persist validated derived report data and account-level constants."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.valid = True
+        self.validation_message = ""
+        self._payload = {
+            "schemaVersion": REPORT_CATALOG_SCHEMA_VERSION,
+            "reportIds": [],
+            "accountConstants": {},
+            "historyView": None,
+        }
+        self._load()
+
+    @staticmethod
+    def _integrity(payload):
+        unsigned = {
+            key: value for key, value in payload.items() if key != "integrity"
+        }
+        return hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+
+    def _invalidate(self, message):
+        self.valid = False
+        self.validation_message = message
+        self._payload = {
+            "schemaVersion": REPORT_CATALOG_SCHEMA_VERSION,
+            "reportIds": [],
+            "accountConstants": {},
+            "historyView": None,
+        }
+
+    def _load(self):
+        if not self.path.exists():
+            return
+        try:
+            with self.path.open("r", encoding="utf-8") as input_file:
+                payload = json.load(input_file)
+            self._validate(payload)
+            self._payload = {
+                key: payload[key]
+                for key in ("schemaVersion", "reportIds", "accountConstants", "historyView")
             }
-        term_accounts.setdefault(term, set()).add(account)
-    return by_pair, term_accounts
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._invalidate(f"ignored invalid catalog: {error}")
+
+    @staticmethod
+    def _validate(payload):
+        if not isinstance(payload, dict):
+            raise ValueError("catalog root must be an object")
+        if payload.get("schemaVersion") != REPORT_CATALOG_SCHEMA_VERSION:
+            raise ValueError("unsupported catalog schema")
+        if payload.get("integrity") != AccountReportCatalog._integrity(payload):
+            raise ValueError("catalog integrity check failed")
+
+        report_ids = payload.get("reportIds")
+        if not isinstance(report_ids, list) or any(not isinstance(item, str) for item in report_ids):
+            raise ValueError("reportIds must be a list of strings")
+
+        account_constants = payload.get("accountConstants")
+        if not isinstance(account_constants, dict):
+            raise ValueError("accountConstants must be an object")
+        for account, fields in account_constants.items():
+            if not isinstance(account, str) or not account or not isinstance(fields, dict):
+                raise ValueError("invalid account constant entry")
+            for field, tracker in fields.items():
+                if not isinstance(field, str) or not isinstance(tracker, dict):
+                    raise ValueError("invalid account constant field")
+                if tracker.get("value") is None:
+                    raise ValueError("constant value cannot be null")
+                report_count = tracker.get("reportCount")
+                if not isinstance(report_count, int) or report_count < 1:
+                    raise ValueError("reportCount must be a positive integer")
+                if not isinstance(tracker.get("lastReportId"), str):
+                    raise ValueError("lastReportId must be a string")
+
+        history_view = payload.get("historyView")
+        if history_view is not None:
+            if not isinstance(history_view, dict):
+                raise ValueError("historyView must be an object or null")
+            if not isinstance(history_view.get("fingerprint"), str):
+                raise ValueError("history fingerprint must be a string")
+            if not isinstance(history_view.get("reportCount"), int) or history_view["reportCount"] < 1:
+                raise ValueError("history reportCount must be a positive integer")
+            views = history_view.get("views")
+            if not isinstance(views, dict):
+                raise ValueError("history views must be an object")
+            if not isinstance(views.get("lastBatchByAccount"), dict):
+                raise ValueError("lastBatchByAccount must be an object")
+            if not isinstance(views.get("termHistoryByAccount"), dict):
+                raise ValueError("termHistoryByAccount must be an object")
+            if not isinstance(views.get("termHistoryRows"), list):
+                raise ValueError("termHistoryRows must be a list")
+
+    def stable_account_values(self, field, accounts=None):
+        selected_accounts = set(accounts) if accounts is not None else None
+        stable = {}
+        for account, fields in self._payload["accountConstants"].items():
+            if selected_accounts is not None and account not in selected_accounts:
+                continue
+            tracker = fields.get(field)
+            if tracker and tracker["reportCount"] >= MIN_CONSTANT_REPORTS:
+                stable[account] = tracker["value"]
+        return stable
+
+    def cached_history_views(self, fingerprint):
+        history_view = self._payload.get("historyView")
+        if (
+            not self.valid
+            or not history_view
+            or history_view.get("fingerprint") != fingerprint
+            or history_view.get("reportCount", 0) < MIN_CONSTANT_REPORTS
+        ):
+            return None
+        return history_view["views"]
+
+    def record_report(self, report_id, account_observations, history_fingerprint, history_views):
+        if report_id in self._payload["reportIds"]:
+            return False
+        self._payload["reportIds"].append(report_id)
+
+        account_constants = self._payload["accountConstants"]
+        for account, observations in account_observations.items():
+            fields = account_constants.setdefault(account, {})
+            for field, value in observations.items():
+                if value is None:
+                    fields.pop(field, None)
+                    continue
+                previous = fields.get(field)
+                if previous and previous["value"] == value:
+                    report_count = previous["reportCount"] + 1
+                else:
+                    report_count = 1
+                fields[field] = {
+                    "value": value,
+                    "reportCount": report_count,
+                    "lastReportId": report_id,
+                }
+
+        previous_history = self._payload.get("historyView")
+        if previous_history and previous_history["fingerprint"] == history_fingerprint:
+            report_count = previous_history["reportCount"] + 1
+        else:
+            report_count = 1
+        self._payload["historyView"] = {
+            "fingerprint": history_fingerprint,
+            "reportCount": report_count,
+            "views": history_views,
+        }
+        return True
+
+    def save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(self._payload)
+        payload["integrity"] = self._integrity(payload)
+        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as output_file:
+            json.dump(payload, output_file, indent=2, ensure_ascii=False)
+            output_file.write("\n")
+        temporary_path.replace(self.path)
+
+
+class BatchHistoryCatalog:
+    """Build reusable accepted-batch indexes in one pass."""
+
+    @classmethod
+    def from_cached_views(cls, views):
+        catalog = cls.__new__(cls)
+        catalog.by_pair = {}
+        catalog.term_accounts = {}
+        catalog.last_batch_by_account = views["lastBatchByAccount"]
+        catalog.term_history_by_account = views["termHistoryByAccount"]
+        catalog.term_history_rows = views["termHistoryRows"]
+        return catalog
+
+    def __init__(self, records):
+        latest_by_account = {}
+        by_pair = {}
+        term_accounts = {}
+
+        for record in records:
+            account = text(record.get("accountNumber"))
+            if not account:
+                continue
+
+            sort_value = text(record.get("created")) or text(record.get("batchDate"))
+            formatted_timestamp = None
+
+            existing_account = latest_by_account.get(account)
+            if existing_account is None or sort_value > existing_account["_sortValue"]:
+                formatted_timestamp = format_batch_timestamp(record)
+                latest_by_account[account] = {
+                    "lastBatchDate": formatted_timestamp,
+                    "_sortValue": sort_value,
+                }
+
+            term = text(record.get("termID"))
+            if not term:
+                continue
+
+            pair = (account, term)
+            existing_pair = by_pair.get(pair)
+            if existing_pair is None or sort_value > existing_pair["_sortValue"]:
+                if formatted_timestamp is None:
+                    formatted_timestamp = format_batch_timestamp(record)
+                by_pair[pair] = {
+                    "lastBatchDate": formatted_timestamp,
+                    "_sortValue": sort_value,
+                }
+
+            term_accounts.setdefault(term, set()).add(account)
+
+        sorted_pairs = sorted(by_pair.items())
+        history = defaultdict(lambda: {
+            "termIDs": [],
+            "lastBatchDate": "",
+            "_sortValue": "",
+        })
+        term_history_rows = []
+
+        for (account, term), detail in sorted_pairs:
+            account_history = history[account]
+            account_history["termIDs"].append(term)
+            if detail["_sortValue"] > account_history["_sortValue"]:
+                account_history["lastBatchDate"] = detail["lastBatchDate"]
+                account_history["_sortValue"] = detail["_sortValue"]
+
+            term_history_rows.append(
+                {
+                    "accountNumber": account,
+                    "termID": term,
+                    "lastBatchDate": detail["lastBatchDate"],
+                }
+            )
+
+        self.by_pair = by_pair
+        self.term_accounts = term_accounts
+        self.last_batch_by_account = {
+            account: detail["lastBatchDate"]
+            for account, detail in latest_by_account.items()
+        }
+        self.term_history_by_account = {
+            account: {
+                "termIDs": detail["termIDs"],
+                "lastBatchDate": detail["lastBatchDate"],
+            }
+            for account, detail in history.items()
+        }
+        self.term_history_rows = term_history_rows
+
+
+def batch_index(records):
+    catalog = BatchHistoryCatalog(records)
+    return catalog.by_pair, catalog.term_accounts
 
 
 def format_timestamp(raw_timestamp):
@@ -639,44 +897,11 @@ def compact_batch_history_rows(records):
 
 
 def latest_batch_dates_by_account(records):
-    latest = {}
-    for record in records:
-        account = text(record.get("accountNumber"))
-        if not account:
-            continue
-        sort_value = text(record.get("created")) or text(record.get("batchDate"))
-        existing = latest.get(account)
-        if existing is None or sort_value > existing["_sortValue"]:
-            latest[account] = {
-                "lastBatchDate": format_batch_timestamp(record),
-                "_sortValue": sort_value,
-            }
-    return {
-        account: detail["lastBatchDate"]
-        for account, detail in latest.items()
-    }
+    return BatchHistoryCatalog(records).last_batch_by_account
 
 
 def term_history_by_account(records):
-    by_pair, _ = batch_index(records)
-    history = defaultdict(lambda: {
-        "termIDs": [],
-        "lastBatchDate": "",
-        "_sortValue": "",
-    })
-    for (account, term), detail in sorted(by_pair.items()):
-        account_history = history[account]
-        account_history["termIDs"].append(term)
-        if detail["_sortValue"] > account_history["_sortValue"]:
-            account_history["lastBatchDate"] = detail["lastBatchDate"]
-            account_history["_sortValue"] = detail["_sortValue"]
-    return {
-        account: {
-            "termIDs": detail["termIDs"],
-            "lastBatchDate": detail["lastBatchDate"],
-        }
-        for account, detail in history.items()
-    }
+    return BatchHistoryCatalog(records).term_history_by_account
 
 
 def write_raw_batch_history(records, path):
@@ -689,17 +914,7 @@ def write_raw_batch_history(records, path):
 
 
 def build_term_history_rows(records):
-    by_pair, _ = batch_index(records)
-    rows = []
-    for (account, term), detail in sorted(by_pair.items()):
-        rows.append(
-            {
-                "accountNumber": account,
-                "termID": term,
-                "lastBatchDate": detail["lastBatchDate"],
-            }
-        )
-    return rows
+    return BatchHistoryCatalog(records).term_history_rows
 
 
 def write_term_history(records, path):
@@ -1475,6 +1690,8 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
     .note { padding: 14px 16px; background: #f8fafb; border: 1px solid var(--border); color: var(--muted); line-height: 1.5; font-size: 13px; }
     .toolbar { display: flex; align-items: center; gap: 12px; margin: 18px 0 10px; }
     .search { flex: 1; min-width: 220px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; }
+    .export-button { padding: 10px 14px; border: 1px solid var(--blue); border-radius: 4px; background: var(--blue); color: #fff; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .export-button:hover { background: #2f78aa; }
     .row-count { color: var(--muted); font-size: 13px; white-space: nowrap; }
     .table-wrap { max-height: calc(100vh - 260px); overflow: auto; background: var(--surface); border: 1px solid var(--border); }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1527,6 +1744,51 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
       return "$" + Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function csvCell(value) {
+      return `"${String(value ?? "").replace(/"/g, '""')}"`;
+    }
+
+    function exportFilename(dataset) {
+      const baseName = String(dataset.filename || dataset.label || "dataset").split(/[\\/]/).pop();
+      return /\\.csv$/i.test(baseName) ? baseName : `${baseName}.csv`;
+    }
+
+    function getVisibleRows(datasetId) {
+      const dataset = REPORT_DATA[datasetId];
+      const currentState = state[datasetId];
+      const search = currentState.search.toLowerCase();
+      const rows = dataset.rows.filter(row => !search || dataset.columns.some(column => String(row[column] ?? "").toLowerCase().includes(search)));
+      if (currentState.sortColumn) {
+        rows.sort((left, right) => {
+          const leftValue = String(left[currentState.sortColumn] ?? "");
+          const rightValue = String(right[currentState.sortColumn] ?? "");
+          const leftNumber = Number(leftValue.replace(/[$,]/g, ""));
+          const rightNumber = Number(rightValue.replace(/[$,]/g, ""));
+          const comparison = Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftValue !== "" && rightValue !== ""
+            ? leftNumber - rightNumber
+            : leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" });
+          return comparison * currentState.sortDirection;
+        });
+      }
+      return rows;
+    }
+
+    function exportDataset(datasetId) {
+      const dataset = REPORT_DATA[datasetId];
+      const rows = getVisibleRows(datasetId);
+      const csv = [
+        dataset.columns,
+        ...rows.map(row => dataset.columns.map(column => row[column] ?? "")),
+      ].map(row => row.map(csvCell).join(",")).join("\\r\\n");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob(["\\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+      link.download = exportFilename(dataset);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+    }
+
     function renderSummary(panel) {
       const topRows = [...REPORT_DATA.primary.rows]
         .sort((left, right) => Number(String(right.approvedAmount || right.AMOUNT || "0").replace(/[$,]/g, "")) - Number(String(left.approvedAmount || left.AMOUNT || "0").replace(/[$,]/g, "")))
@@ -1556,20 +1818,7 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
     function renderTable(panel, datasetId) {
       const dataset = REPORT_DATA[datasetId];
       const currentState = state[datasetId];
-      const search = currentState.search.toLowerCase();
-      const rows = dataset.rows.filter(row => !search || dataset.columns.some(column => String(row[column] ?? "").toLowerCase().includes(search)));
-      if (currentState.sortColumn) {
-        rows.sort((left, right) => {
-          const leftValue = String(left[currentState.sortColumn] ?? "");
-          const rightValue = String(right[currentState.sortColumn] ?? "");
-          const leftNumber = Number(leftValue.replace(/[$,]/g, ""));
-          const rightNumber = Number(rightValue.replace(/[$,]/g, ""));
-          const comparison = Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftValue !== "" && rightValue !== ""
-            ? leftNumber - rightNumber
-            : leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" });
-          return comparison * currentState.sortDirection;
-        });
-      }
+      const rows = getVisibleRows(datasetId);
       panel.querySelector(".row-count").textContent = `${formatNumber(rows.length)} of ${formatNumber(dataset.rows.length)} rows`;
       const body = panel.querySelector("tbody");
       body.replaceChildren();
@@ -1597,7 +1846,7 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
     function renderDataset(panel, datasetId) {
       const dataset = REPORT_DATA[datasetId];
       state[datasetId] = state[datasetId] || { search: "", sortColumn: null, sortDirection: 1 };
-      panel.innerHTML = `<div class="toolbar"><input class="search" type="search" placeholder="Search this tab..."><span class="row-count"></span></div><div class="table-wrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>`;
+      panel.innerHTML = `<div class="toolbar"><input class="search" type="search" placeholder="Search this tab..."><button class="export-button" type="button">Export CSV</button><span class="row-count"></span></div><div class="table-wrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>`;
       const headerRow = panel.querySelector("thead tr");
       dataset.columns.forEach(column => {
         const header = document.createElement("th");
@@ -1617,6 +1866,7 @@ def write_interactive_summary_html(path, batch_days, auth_window, report_start, 
         state[datasetId].search = event.target.value;
         renderTable(panel, datasetId);
       });
+      panel.querySelector(".export-button").addEventListener("click", () => exportDataset(datasetId));
       renderTable(panel, datasetId);
     }
 
@@ -1731,6 +1981,13 @@ def main():
     output_directory = create_timestamped_output_directory(
         resolve_output_directory(config_path, config)
     )
+    report_catalog = AccountReportCatalog(
+        output_directory.parent / REPORT_CATALOG_FILENAME
+    )
+    if report_catalog.valid and report_catalog.path.exists():
+        print(f"Validated report catalog: {report_catalog.path}")
+    elif not report_catalog.valid:
+        print(f"Warning: {report_catalog.validation_message}")
 
     print(f"Loaded {len(raw_devices)} optional store display overrides.")
     print(f"MXConnect base URL: {base_url}")
@@ -1784,8 +2041,15 @@ def main():
             record for record in history_records if is_accepted_batch(record)
         ]
         print(f"Historical activity reviewed: {len(history_records)} records; {len(accepted_history_records)} accepted")
-    last_batch_by_account = latest_batch_dates_by_account(accepted_history_records)
-    term_history_accounts = term_history_by_account(accepted_history_records)
+    history_fingerprint = fingerprint_records(accepted_history_records)
+    cached_history_views = report_catalog.cached_history_views(history_fingerprint)
+    if cached_history_views is not None:
+        print("Reusing the validated three-report history catalog.")
+        history_catalog = BatchHistoryCatalog.from_cached_views(cached_history_views)
+    else:
+        history_catalog = BatchHistoryCatalog(accepted_history_records)
+    last_batch_by_account = history_catalog.last_batch_by_account
+    term_history_accounts = history_catalog.term_history_by_account
 
     print("Step 4 of 5: Checking authorization activity...")
     authorization_records = fetch_all(
@@ -1807,7 +2071,7 @@ def main():
 
     print("Step 5 of 5: Writing HTML report...")
     summary_path = output_directory / "BottlePOS PAX Batch Report.html"
-    term_history_rows = build_term_history_rows(accepted_history_records)
+    term_history_rows = history_catalog.term_history_rows
     batch_history_rows = compact_batch_history_rows(accepted_batch_records)
     write_interactive_summary_html(
         summary_path,
@@ -1822,6 +2086,29 @@ def main():
             ("Term/account history", "TERMID_ACCOUNT_HISTORY", "AccountNumber and termID pairs from accepted batch history.", term_history_rows),
         ],
     )
+
+    # Only the derived historical term/account view is eligible for reuse.
+    # Authorization totals, current batch state, and terminal identity remain live.
+    account_observations = {
+        account: {
+            TERM_HISTORY_CONSTANT_FIELD: term_history_accounts.get(account) or None,
+        }
+        for account in candidate_accounts
+    }
+    report_catalog.record_report(
+        output_directory.name,
+        account_observations,
+        history_fingerprint,
+        {
+            "lastBatchByAccount": last_batch_by_account,
+            "termHistoryByAccount": term_history_accounts,
+            "termHistoryRows": term_history_rows,
+        },
+    )
+    try:
+        report_catalog.save()
+    except OSError as error:
+        print(f"Warning: report catalog was not saved: {error}")
 
     print("Report complete.")
     print(f"Stores flagged: {len(email_rows)}")

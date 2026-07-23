@@ -99,7 +99,7 @@ class BatchHistoryCatalogTests(unittest.TestCase):
         self.assertEqual(report.term_history_by_account(self.records), catalog.term_history_by_account)
         self.assertEqual(report.build_term_history_rows(self.records), catalog.term_history_rows)
 
-    def test_report_remains_fail_closed_without_term_history(self):
+    def test_report_emits_null_term_without_term_history(self):
         catalog = report.BatchHistoryCatalog(self.records)
         roster = [
             {
@@ -121,24 +121,128 @@ class BatchHistoryCatalogTests(unittest.TestCase):
                 "location": {"name": "Store B"},
             },
         ]
-        auth_summary = {
-            ("A", "AUTH-TERM-A"): {"amount": 10.0, "count": 1},
-            ("B", "AUTH-TERM-B"): {"amount": 20.0, "count": 1},
+        activity_summary = {
+            "A": {
+                "activityCount": 1,
+                "approvedAmount": 10.0,
+                "approvedCount": 1,
+                "terminals": {"AUTH-TERM-A"},
+            },
+            "B": {
+                "activityCount": 1,
+                "approvedAmount": 20.0,
+                "approvedCount": 1,
+                "terminals": {"AUTH-TERM-B"},
+            },
         }
 
         email_rows, review_rows = report.create_store_report(
             roster,
             [],
-            auth_summary,
+            activity_summary,
             [self.records[1]],
             catalog.last_batch_by_account,
             catalog.term_history_by_account,
+            {"B": 20.0},
+            "2026-01-01",
+        )
+
+        self.assertEqual(len(email_rows), 1)
+        self.assertEqual(email_rows[0]["accountNumber"], "B")
+        self.assertEqual(email_rows[0]["termID"], "NULL")
+        self.assertEqual(email_rows[0]["authorizedUnbatchedAmount"], "20.00")
+        self.assertEqual(review_rows, [])
+
+    def test_stale_rules_use_any_activity_and_raw_batch_status(self):
+        activity = report.build_account_activity_summary(
+            [
+                {
+                    "accountNumber": "A",
+                    "authorizedAmount": "12.50",
+                    "authorizationResponseStatus": "Declined",
+                },
+                {
+                    "accountNumber": "A",
+                    "authorizedAmount": "7.50",
+                    "authorizationResponseStatus": "approved",
+                },
+            ]
+        )
+
+        self.assertEqual(activity["A"]["activityCount"], 2)
+        self.assertEqual(activity["A"]["approvedCount"], 1)
+        self.assertEqual(activity["A"]["approvedAmount"], 7.5)
+        self.assertEqual(report.batch_status({"rejected": "Yes"}), "rejected")
+        self.assertEqual(report.batch_status({"rejected": "No"}), "accepted")
+        self.assertEqual(report.batch_status({}), "unknown")
+
+        roster = [
+            {
+                "account": {
+                    "number": "A",
+                    "product": {"id": "3"},
+                    "active": True,
+                    "status": "Open",
+                },
+                "location": {"name": "Store A"},
+            },
+        ]
+        email_rows, review_rows = report.create_store_report(
+            roster,
+            [],
+            activity,
+            [],
+            {},
+            {},
+            {"A": 7.5},
+            "2026-01-01",
+        )
+        self.assertEqual(len(email_rows), 1)
+        self.assertEqual(email_rows[0]["accountNumber"], "A")
+        self.assertEqual(email_rows[0]["termID"], "NULL")
+        self.assertEqual(review_rows, [])
+
+    def test_absolute_authorization_url_contains_explicit_window(self):
+        url = report.authorization_absolute_url(
+            "https://fixture.invalid",
+            "2026-01-01",
+            "2026-01-03",
+            {"B", "A"},
+        )
+
+        self.assertIn("dr_type=abs", url)
+        self.assertIn("2026-01-01T00%3A00%3A00.000Z", url)
+        self.assertIn("2026-01-03T23%3A59%3A59.999Z", url)
+
+    def test_any_batch_record_suppresses_stale_candidate(self):
+        roster = [
+            {
+                "account": {
+                    "number": "A",
+                    "product": {"id": "3"},
+                    "active": True,
+                    "status": "Open",
+                },
+                "location": {"name": "Store A"},
+            },
+        ]
+        activity = report.build_account_activity_summary(
+            [{"accountNumber": "A", "authorizationResponseStatus": "Declined"}]
+        )
+
+        email_rows, review_rows = report.create_store_report(
+            roster,
+            [],
+            activity,
+            [{"accountNumber": "A", "rejected": "Yes"}],
+            {},
+            {},
+            {"A": 10.0},
+            "2026-01-01",
         )
 
         self.assertEqual(email_rows, [])
-        self.assertEqual(len(review_rows), 1)
-        self.assertEqual(review_rows[0]["accountNumber"], "B")
-        self.assertEqual(review_rows[0]["reason"], "NO_TERMID_HISTORY_FOR_ACCOUNT")
+        self.assertEqual(review_rows, [])
 
 
 class AccountReportCatalogTests(unittest.TestCase):
@@ -287,6 +391,7 @@ class EndToEndFixtureTests(unittest.TestCase):
             config=str(config_path),
             batch_days=3,
             historical_days=4,
+            auth_check_days=None,
             auth_window=None,
             log_file=None,
         )
@@ -366,7 +471,7 @@ class InteractiveSummaryHtmlTests(unittest.TestCase):
             ("Primary exception report", "PINPAD_BATCH_NOT_CLOSED.csv", ["accountNumber"], []),
             ("Store review", "NEEDS_MAPPING_OR_REVIEW.csv", ["accountNumber"], []),
             ("Term/account history", "TERMID_ACCOUNT_HISTORY.csv", ["accountNumber", "termID"], []),
-            ("Accepted batch history", "BATCH_HISTORY.csv", ["accountNumber", "termID"], []),
+            ("Batch history", "BATCH_HISTORY.csv", ["accountNumber", "termID"], []),
         ]
 
         with tempfile.TemporaryDirectory() as temp_dir:

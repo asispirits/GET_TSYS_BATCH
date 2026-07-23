@@ -2328,6 +2328,7 @@ class BatchReportUi(tk.Tk):
         )
         self.output_directory_var = tk.StringVar(value="./tsys-auditdata")
         self.batch_days_var = tk.IntVar(value=3)
+        self.last_batch_days_var = tk.IntVar(value=DEFAULT_LAST_BATCH_LOOKBACK_DAYS)
         self.devices = []
         self.config = default_config()
         self.loaded_config_path = None
@@ -2495,6 +2496,24 @@ class BatchReportUi(tk.Tk):
             highlightcolor="#0969da",
         ).pack(side="left", padx=(0, 14))
 
+        ttk.Label(options, text="Batch history lookback (days)").pack(side="left", padx=(0, 5))
+        tk.Spinbox(
+            options,
+            from_=1,
+            to=3650,
+            width=5,
+            textvariable=self.last_batch_days_var,
+            bg="#ffffff",
+            fg="#1f2328",
+            insertbackground="#0969da",
+            buttonbackground="#f6f8fa",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#d0d7de",
+            highlightcolor="#0969da",
+        ).pack(side="left", padx=(0, 14))
+
         actions = ttk.Frame(top)
         actions.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 8))
         ttk.Button(actions, text="Save config", command=self.save_config_from_ui).pack(side="left", padx=(0, 8))
@@ -2540,6 +2559,14 @@ class BatchReportUi(tk.Tk):
             self.loaded_config_path = str(path)
             self.output_directory_var.set(str(resolve_output_directory(path, config)))
             self.batch_days_var.set(int(config.get("batchLookbackDays", 3)))
+            self.last_batch_days_var.set(
+                int(
+                    config.get(
+                        "lastBatchLookbackDays",
+                        config.get("historicalLookbackDays", DEFAULT_LAST_BATCH_LOOKBACK_DAYS),
+                    )
+                )
+            )
             self.refresh_table()
             if log:
                 self.log(f"Loaded {len(self.devices)} devices.")
@@ -2626,10 +2653,12 @@ class BatchReportUi(tk.Tk):
             path = Path(self.config_path_var.get()).expanduser().resolve()
             config = dict(self.config or default_config())
             config["batchLookbackDays"] = max(1, int(self.batch_days_var.get()))
-            config["historicalLookbackDays"] = max(
-                int(config.get("historicalLookbackDays", 90)),
+            config["lastBatchLookbackDays"] = max(
                 config["batchLookbackDays"],
+                int(self.last_batch_days_var.get()),
             )
+            config["authCheckDays"] = config["batchLookbackDays"]
+            config["authorizationMode"] = "absolute"
             config["requireAuthorizationActivity"] = True
             save_config(path, config, self.devices, self.output_directory_var.get())
             self.config = config
